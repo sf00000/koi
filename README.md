@@ -117,21 +117,50 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Koi /f
 > ⚠️ **注意**：自启记录的是开启那一刻 exe 的完整路径。
 > 先把 `Koi.exe` 放到固定目录再开启自启；之后挪动文件夹需重新勾选一次。
 
-## 🔧 自己编译（无需安装任何开发工具）
+## 🔧 如何把 Program.cs 编译成 exe
 
-使用 Windows 自带的 .NET Framework 编译器（Win10/11 均内置）：
+仓库里的 `Koi.exe` 是已经编译好的成品，**不想编译直接用它即可**。
+想自己改代码（换背景色、圆角、放大幅度、间距……）或从源码构建时，看这里。
+
+**前提**：Windows 10 / 11 自带 .NET Framework 4.x 编译器——
+**不需要安装 Visual Studio、SDK 或任何开发工具**，源码 `Program.cs` 是单文件 C# 5 语法，
+约 700 行、注释齐全。
+
+### 方式一：一键编译（推荐）
+
+双击仓库根目录的 **`build.bat`**，它自动调用系统自带的 `csc.exe` 编译器，
+在当前目录生成最新的 `Koi.exe`，完成。
+
+> 重新编译前请先退出正在运行的 Koi（右键 Dock → 退出），否则 exe 文件被占用会写入失败。
+
+### 方式二：手动命令行
+
+打开 `cmd`，执行（路径按你的仓库位置调整）：
 
 ```bat
 cd /d C:\Windows\Microsoft.NET\Framework64\v4.0.30319
-csc -nologo -target:winexe -out:<输出目录>\Koi.exe ^
+
+csc -nologo -target:winexe -out:G:\workbuddy\Koi\Koi.exe ^
   -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
   -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
   -r:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll ^
-  <源码目录>\Program.cs
+  G:\workbuddy\Koi\Program.cs
 ```
 
-源码是 C# 5 兼容语法（适配内置编译器），单文件 `Program.cs` 约 700 行、注释齐全。
-改样式（背景色、圆角、放大幅度、间距等）直接编辑后重新编译即可。
+命令说明：
+
+| 部分 | 作用 |
+| --- | --- |
+| `-target:winexe` | 生成 Windows 窗体程序（双击运行不弹黑控制台） |
+| `-out:...` | 输出的 exe 路径 |
+| `-r:...` | 引用的系统程序集（WPF 三件套 + 绘图 + 注册表访问） |
+| `Program.cs` | 源码，单文件即全部工程 |
+
+### 常见编译问题
+
+- **提示 csc 不存在**：个别精简版系统缺少 .NET Framework 4.x，去微软官网装上即可
+- **写不进 Koi.exe**：程序还在运行，先右键 Dock → 退出
+- **提示找不到元数据文件**：必须在 `Framework64\v4.0.30319` 目录下执行（WPF 程序集的相对路径才有效），或直接用 `build.bat`
 
 ## ❓ 常见问题
 
