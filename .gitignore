@@ -1,0 +1,6 @@
+# 编译产物（默认不上传；如果想把 FloatDock.exe 一起放进仓库，删掉下面这行）
+*.exe
+*.pdb
+bin/
+obj/
+.vs/
