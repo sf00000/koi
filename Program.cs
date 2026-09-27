@@ -345,6 +345,7 @@ namespace Koi
 
         void Launch(ItemCfg c)
         {
+            if (TryActivateRunning(c.Path)) return; // 已在运行：聚焦已有窗口，不重复启动
             try
             {
                 Process.Start(new ProcessStartInfo(c.Path) { UseShellExecute = true });
@@ -353,6 +354,37 @@ namespace Koi
             {
                 MessageBox.Show(this, "无法启动「" + c.Name + "」：" + ex.Message, "Koi");
             }
+        }
+
+        // 点击时若目标程序已在运行，激活它的主窗口（Mac Dock 行为）。
+        // 仅对 .exe 条目生效；lnk/url/shell: 条目交由系统启动（Store 应用自身会单实例聚焦）。
+        [DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        const int SW_RESTORE = 9;
+
+        bool TryActivateRunning(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) return false;
+                if (string.Compare(Path.GetExtension(path), ".exe", true) != 0) return false;
+                string name = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrEmpty(name)) return false;
+                foreach (Process p in Process.GetProcessesByName(name))
+                {
+                    using (p)
+                    {
+                        if (p.MainWindowHandle == IntPtr.Zero) continue;
+                        ShowWindow(p.MainWindowHandle, SW_RESTORE); // 最小化则恢复
+                        SetForegroundWindow(p.MainWindowHandle);     // 前置（点击后进程有前台权）
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         void OpenLocation(ItemCfg c)
