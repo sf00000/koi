@@ -86,6 +86,8 @@ namespace Koi
         bool dragStarted;          // 已进入拖动状态（图标跟随光标）
         TranslateTransform dragTranslate;
         TextBlock plusText;        // 左上角"+"按钮的文字
+        Border plusButton;         // 左上角"+"按钮
+        Grid scrollInner;          // 滚动内容（含放大顶部留白）
         ScrollViewer scroller;     // 图标超宽时的横向滚动容器
         static bool configLoadFailed; // 损坏配置归档失败时暂停保存，保护原文件
         DispatcherTimer saveTimer;
@@ -111,7 +113,11 @@ namespace Koi
 
             SourceInitialized += delegate { HideFromAltTab(); };
             Deactivated += delegate { if (dragEntry != null) EndReorder(dragEntry); }; // 窗口失活时结束拖动，防止状态残留
-            LocationChanged += delegate { ScheduleSave(); };
+            LocationChanged += delegate
+            {
+                ScheduleSave();
+                HandleScreenChanged(); // 拖到不同分辨率/缩放的屏幕时刷新宽度上限
+            };
             SizeChanged += delegate { OnWindowSizeChanged(); }; // 内容变化后统一做屏幕约束
             Loaded += delegate
             {
@@ -143,7 +149,7 @@ namespace Koi
             RowDefinition overflow = new RowDefinition();
             overflow.Height = new GridLength(IconSizePx() * 0.8, GridUnitType.Pixel); // 图标放大时向上凸出的空间
             RowDefinition body = new RowDefinition();
-            body.Height = GridLength.Auto;
+            body.Height = new GridLength(IconSizePx() + 10, GridUnitType.Pixel); // 图标条+名称下缘
 
             root.RowDefinitions.Add(overflow);
             root.RowDefinitions.Add(body);
@@ -191,16 +197,16 @@ namespace Koi
                 m.IsOpen = true;
             };
 
-            StackPanel outer = new StackPanel();
-            outer.Orientation = Orientation.Horizontal;
-            outer.Children.Add(plus);
-            // 图标行放进横向滚动容器：图标缩到 32px 仍放不下时可滚动访问
+            // 图标行放进横向滚动容器：图标缩到 32px 仍放不下时可横向滚动访问。
+            // 放大所需的顶部留白放在滚动内容内部（scrollInner 上边距=0.8×图标），鱼眼放大部分不会被视口裁掉
+            scrollInner = new Grid();
+            scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(IconSizePx() * 0.8), 12, 10); // 左让位＋按钮，上=放大留白，右留余量，下留名称空间
+            scrollInner.Children.Add(row);
+
             scroller = new ScrollViewer();
             scroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden;
             scroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            scroller.Content = row;
-            outer.Children.Add(scroller);
-            bg.Child = outer;
+            scroller.Content = scrollInner;
 
             hint = new TextBlock();
             hint.Text = "把程序 / 快捷方式拖到这里，或点左侧 ＋ 添加";
@@ -209,8 +215,18 @@ namespace Koi
             hint.Margin = new Thickness(12, 4, 12, 0);
             row.Children.Add(hint);
 
+            // 分层：底层暗色背景条(row1) → 中层滚动图标区(跨两行，含放大留白) → 顶层＋按钮/名称标签
             Grid.SetRow(bg, 1);
             root.Children.Add(bg);
+            Grid.SetRow(scroller, 0);
+            Grid.SetRowSpan(scroller, 2);
+            root.Children.Add(scroller);
+            plusButton = plus;
+            Grid.SetRow(plusButton, 1);
+            plusButton.HorizontalAlignment = HorizontalAlignment.Left;
+            plusButton.VerticalAlignment = VerticalAlignment.Center;
+            plusButton.Margin = new Thickness(8, 0, 0, 0);
+            root.Children.Add(plusButton);
 
             // 悬停名称标签：悬浮在图标上方、跟随鱼眼位置，替代原生 tooltip
             nameLabel = new Border();
@@ -232,8 +248,9 @@ namespace Koi
 
             Content = root;
 
-            bg.PreviewMouseLeftButtonDown += OnBgLeftDown;
+            PreviewMouseLeftButtonDown += OnWindowPreviewDown; // 窗口级判定：按在空白处=拖动窗口
             bg.ContextMenu = BuildBgMenu();
+            scroller.ContextMenu = BuildBgMenu(); // 空隙/滚动区右键同样弹全局菜单
 
             AllowDrop = true;
             DragEnter += OnDragEnter;
@@ -295,6 +312,7 @@ namespace Koi
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
             cap.MouseLeftButtonUp += delegate { Launch(c); };
             cap.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
+            cap.Tag = "cap"; // OnBgLeftDown 用它区分"点在名称上"
             cap.ContextMenu = BuildItemMenu(en); // 名称右键 = 图标右键，统一操作
             en.Caption = cap;
 
@@ -400,9 +418,18 @@ namespace Koi
 
         // ---------------------------------------------------------------- 交互
 
-        void OnBgLeftDown(object sender, MouseButtonEventArgs e)
+        // 窗口级按下判定：按在空白处 = 拖动窗口；按在图标/名称/＋按钮上 = 交给各自逻辑
+        void OnWindowPreviewDown(object sender, MouseButtonEventArgs e)
         {
-            if (e.OriginalSource != bg && e.OriginalSource != hint) return; // 点在图标/名称上时不拖动窗口
+            DependencyObject d = e.OriginalSource as DependencyObject;
+            while (d != null)
+            {
+                if (d is Image) return;
+                if (d == plusButton) return;
+                TextBlock tb = d as TextBlock;
+                if (tb != null && (tb.Tag as string) == "cap") return;
+                d = System.Windows.Media.VisualTreeHelper.GetParent(d);
+            }
             DragMove();
         }
 
@@ -609,6 +636,26 @@ namespace Koi
 
         bool fitting; // 防止 SizeChanged → 缩图标 → SizeChanged 递归
 
+        string lastScreenKey;
+
+        // 所在显示器变化（拖动跨屏、改分辨率）时重算宽度上限并重新约束
+        void HandleScreenChanged()
+        {
+            try
+            {
+                IntPtr h = new WindowInteropHelper(this).Handle;
+                if (h == IntPtr.Zero) return;
+                System.Windows.Forms.Screen s = System.Windows.Forms.Screen.FromHandle(h);
+                if (s == null) return;
+                string key = s.DeviceName + "|" + s.WorkingArea.Left + "," + s.WorkingArea.Top + ","
+                           + s.WorkingArea.Width + "," + s.WorkingArea.Height;
+                if (key == lastScreenKey) return;
+                lastScreenKey = key;
+                OnWindowSizeChanged();
+            }
+            catch { }
+        }
+
         // 窗口尺寸随内容变化后统一处理：宽过屏幕则自动缩图标，再约束位置
         void OnWindowSizeChanged()
         {
@@ -661,7 +708,14 @@ namespace Koi
                 if (en.Caption != null) en.Caption.MaxWidth = v + 10;
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
+            root.RowDefinitions[1].Height = new GridLength(v + 10, GridUnitType.Pixel);
+            if (scrollInner != null) scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(v * 0.8), 12, 10);
             UpdateLayout();
+        }
+
+        double PlusWidth()
+        {
+            return plusButton != null && plusButton.ActualWidth > 0 ? plusButton.ActualWidth : 40;
         }
 
         static readonly Color BaseBg = Color.FromRgb(0x16, 0x19, 0x1E);
