@@ -22,6 +22,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Xml.Serialization;
@@ -78,9 +79,10 @@ namespace Koi
         Grid root;
         Border nameLabel;          // 悬停时显示在图标上方的名称标签
         DockEntry hoveredEntry;
-        DockEntry reorderSource;   // 正在拖动排序的图标
+        DockEntry reorderSource;   // 按住的图标（排序候选）
         Point reorderStart;
-        static readonly string ReorderFormat = "Koi-Reorder";
+        bool dragStarted;          // 已进入拖动状态（图标跟随光标）
+        TranslateTransform dragTranslate;
         DispatcherTimer saveTimer;
 
         public DockWindow()
@@ -223,22 +225,23 @@ namespace Koi
             img.SetValue(RenderOptions.BitmapScalingModeProperty, BitmapScalingMode.HighQuality);
             img.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); };
             img.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
-            img.MouseLeftButtonUp += delegate { Launch(c); };
+            img.MouseLeftButtonUp += delegate
+            {
+                bool wasDrag = dragStarted;
+                EndReorder(en);
+                if (!wasDrag) Launch(c);
+            };
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
             img.ContextMenu = BuildItemMenu(en);
             en.Img = img;
-            img.Tag = en;
 
-            // 拖动排序：按住移动超过阈值进入拖放，划过其他图标实时换位
-            img.AllowDrop = true;
+            // Mac 式拖动排序：按住移动即抬起跟随光标，实时换位，松手回弹落位
             img.PreviewMouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e2)
             {
                 reorderSource = en;
                 reorderStart = e2.GetPosition(row);
             };
             img.MouseMove += OnItemMouseMove;
-            img.DragOver += OnItemDragOver;
-            img.Drop += OnItemDrop;
 
             // 名称常显在图标下方，超长省略号
             TextBlock cap = new TextBlock();
@@ -354,52 +357,75 @@ namespace Koi
             DragMove();
         }
 
-        // ---------------- 拖动排序 ----------------
+        // ---------------- 拖动排序（Mac 式实时跟随） ----------------
 
         void OnItemMouseMove(object sender, MouseEventArgs e)
         {
             if (reorderSource == null || e.LeftButton != MouseButtonState.Pressed) return;
-            Point p = e.GetPosition(row);
-            if (Math.Abs(p.X - reorderStart.X) < 5 && Math.Abs(p.Y - reorderStart.Y) < 5) return; // 原地点击不拖
             DockEntry src = reorderSource;
-            reorderSource = null;
-            DataObject d = new DataObject(ReorderFormat, src);
-            try { DragDrop.DoDragDrop(src.Img, d, DragDropEffects.Move); }
-            finally { ScheduleSave(); } // 无论落在哪，顺序已是最终视觉状态
-        }
-
-        void OnItemDragOver(object sender, DragEventArgs e)
-        {
-            if (!e.Data.GetDataPresent(ReorderFormat)) return; // 文件拖放走窗口级处理器
-            DockEntry src = e.Data.GetData(ReorderFormat) as DockEntry;
-            DockEntry tgt = (sender as FrameworkElement).Tag as DockEntry;
-            if (src == null || tgt == null || src == tgt)
+            Point p = e.GetPosition(row);
+            if (!dragStarted)
             {
-                if (src != null) e.Effects = DragDropEffects.None;
-                e.Handled = true;
-                return;
+                if (Math.Abs(p.X - reorderStart.X) < 4 && Math.Abs(p.Y - reorderStart.Y) < 4) return;
+                dragStarted = true;
+                hoveredEntry = null;
+                nameLabel.Visibility = Visibility.Collapsed;
+                dragTranslate = new TranslateTransform();
+                src.Host.RenderTransform = dragTranslate;
+                Panel.SetZIndex(src.Host, 20);          // 抬到所有图标之上
+                src.Scale.ScaleX = 1.12; src.Scale.ScaleY = 1.12; // 轻微放大表示"拿起"
+                src.Img.CaptureMouse();
             }
-            int i1 = entries.IndexOf(src), i2 = entries.IndexOf(tgt);
-            if (i1 >= 0 && i2 >= 0 && i1 != i2)
+            // 图标中心跟随光标
+            double cx = src.Host.TranslatePoint(new Point(src.Host.ActualWidth / 2.0, 0), row).X;
+            dragTranslate.X = p.X - cx;
+            // 光标越过一个槽位宽度即换位
+            int cur = entries.IndexOf(src);
+            double pitch = Math.Max(1, src.Host.ActualWidth);
+            int target = cur + (int)Math.Round((p.X - cx) / pitch);
+            if (target < 0) target = 0;
+            if (target > entries.Count - 1) target = entries.Count - 1;
+            if (target != cur)
             {
-                entries.RemoveAt(i1);
-                entries.Insert(i2, src);
+                entries.RemoveAt(cur);
+                entries.Insert(target, src);
                 row.Children.Remove(src.Host);
-                row.Children.Insert(i2, src.Host);
+                row.Children.Insert(target, src.Host);
             }
-            e.Effects = DragDropEffects.Move;
-            e.Handled = true;
         }
 
-        void OnItemDrop(object sender, DragEventArgs e)
+        void EndReorder(DockEntry en)
         {
-            if (!e.Data.GetDataPresent(ReorderFormat)) return;
-            e.Handled = true;
-            ScheduleSave();
+            if (dragStarted)
+            {
+                dragStarted = false;
+                if (en.Img.IsMouseCaptured) en.Img.ReleaseMouseCapture();
+                en.Scale.ScaleX = 1; en.Scale.ScaleY = 1;
+                TranslateTransform tt = en.Host.RenderTransform as TranslateTransform;
+                if (tt != null)
+                {
+                    // 回弹落位动画，动画结束再归还变换与层级
+                    DoubleAnimation back = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
+                    back.Completed += delegate
+                    {
+                        en.Host.RenderTransform = null;
+                        Panel.SetZIndex(en.Host, 0);
+                    };
+                    tt.BeginAnimation(TranslateTransform.XProperty, back);
+                }
+                else
+                {
+                    en.Host.RenderTransform = null;
+                    Panel.SetZIndex(en.Host, 0);
+                }
+                ScheduleSave();
+            }
+            reorderSource = null;
         }
 
         void OnFisheye(object sender, MouseEventArgs e)
         {
+            if (dragStarted) return; // 拖动中不叠加鱼眼效果
             double mx = e.GetPosition(row).X;
             double sigma = IconSizePx() * 1.35;
             const double amp = 0.55;
@@ -437,6 +463,7 @@ namespace Koi
 
         void OnFisheyeLeave(object sender, MouseEventArgs e)
         {
+            if (dragStarted) return; // 拖动中不改缩放
             hoveredEntry = null;
             nameLabel.Visibility = Visibility.Collapsed;
             foreach (DockEntry en in entries)
