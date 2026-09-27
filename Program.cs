@@ -84,6 +84,7 @@ namespace Koi
         Point reorderStart;
         bool dragStarted;          // 已进入拖动状态（图标跟随光标）
         TranslateTransform dragTranslate;
+        TextBlock plusText;        // 左上角"+"按钮的文字
         DispatcherTimer saveTimer;
 
         public DockWindow()
@@ -162,10 +163,41 @@ namespace Koi
 
             row = new StackPanel();
             row.Orientation = Orientation.Horizontal;
-            bg.Child = row;
+
+            // 左上角"+"：快捷添加程序 / 文件夹
+            plusText = new TextBlock();
+            plusText.Text = "＋";
+            plusText.FontSize = Math.Max(16, Math.Round(IconSizePx() * 0.30));
+            plusText.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xD3, 0xD7, 0xDC));
+            plusText.TextAlignment = TextAlignment.Center;
+            Border plus = new Border();
+            plus.CornerRadius = new CornerRadius(10);
+            plus.Padding = new Thickness(9, 2, 9, 5);
+            plus.Margin = new Thickness(0, 0, 6, 0);
+            plus.VerticalAlignment = VerticalAlignment.Center;
+            plus.Cursor = Cursors.Hand;
+            plus.Background = Brushes.Transparent;
+            plus.Child = plusText;
+            plus.MouseEnter += delegate { plus.Background = new SolidColorBrush(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF)); };
+            plus.MouseLeave += delegate { plus.Background = Brushes.Transparent; };
+            plus.MouseLeftButtonUp += delegate
+            {
+                ContextMenu m = new ContextMenu();
+                m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
+                m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
+                m.PlacementTarget = plus;
+                m.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+                m.IsOpen = true;
+            };
+
+            StackPanel outer = new StackPanel();
+            outer.Orientation = Orientation.Horizontal;
+            outer.Children.Add(plus);
+            outer.Children.Add(row);
+            bg.Child = outer;
 
             hint = new TextBlock();
-            hint.Text = "把程序 / 快捷方式拖到这里，或右键 → 添加程序";
+            hint.Text = "把程序 / 快捷方式拖到这里，或点左侧 ＋ 添加";
             hint.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xE8, 0xEA, 0xED));
             hint.FontSize = 13;
             hint.Margin = new Thickness(12, 4, 12, 0);
@@ -489,6 +521,7 @@ namespace Koi
             v = Math.Max(32, Math.Min(112, Math.Round(v)));
             if (v == IconSizePx()) return;
             cfg.IconSize = v;
+            if (plusText != null) plusText.FontSize = Math.Max(16, Math.Round(v * 0.30));
             foreach (DockEntry en in entries)
             {
                 en.Img.Width = v;
@@ -635,7 +668,7 @@ namespace Koi
                 "把「" + en.Cfg.Name + "」从 Dock 移除？（不会删除原文件）",
                 "Koi", MessageBoxButton.OKCancel, MessageBoxImage.Question);
             if (r != MessageBoxResult.OK) return;
-            row.Children.Remove(en.Img);
+            row.Children.Remove(en.Host); // Host = 图标+名称组合（此前误删旧的单图标元素导致移除不生效）
             entries.Remove(en);
             UpdateHint();
             ScheduleSave();
