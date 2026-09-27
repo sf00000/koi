@@ -32,6 +32,9 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+
 namespace Koi
 {
     public class ItemCfg
@@ -66,6 +69,8 @@ namespace Koi
 
     public class DockWindow : Window
     {
+        internal const string AppVersion = "1.0.0"; // 发布时由 release.ps1 自动递增
+
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
         static readonly string ConfigFile = Path.Combine(ConfigDir, "config.xml");
@@ -353,6 +358,10 @@ namespace Koi
         ContextMenu BuildBgMenu()
         {
             ContextMenu m = new ContextMenu();
+            MenuItem ver = Mi("Koi 锦鲤坞 v" + AppVersion, null);
+            ver.IsEnabled = false;
+            m.Items.Add(ver);
+            m.Items.Add(new Separator());
             m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
             m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
             m.Items.Add(new Separator());
