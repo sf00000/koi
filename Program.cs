@@ -310,7 +310,7 @@ namespace Koi
             cap.TextAlignment = TextAlignment.Center;
             cap.TextWrapping = TextWrapping.Wrap;
             cap.TextTrimming = TextTrimming.CharacterEllipsis;
-            cap.MaxWidth = IconSizePx() + 10;
+            cap.MaxWidth = Math.Max(IconSizePx() + 10, 76); // 名称宽度下限：避免英文单词被拦腰换行
             cap.MaxHeight = 30; // 两行封顶
             cap.Margin = new Thickness(0, 2, 0, 0);
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
@@ -322,7 +322,8 @@ namespace Koi
 
             StackPanel host = new StackPanel();
             host.Orientation = Orientation.Vertical;
-            host.Margin = new Thickness(5, 0, 5, 0);
+            double m = Math.Round(IconSizePx() * 0.18); // 间距随图标尺寸自动调整
+            host.Margin = new Thickness(m, 0, m, 0);
             host.Children.Add(img);
             host.Children.Add(cap);
             en.Host = host;
@@ -691,11 +692,13 @@ namespace Koi
         {
             cfg.IconSize = v;
             if (plusText != null) plusText.FontSize = Math.Max(16, Math.Round(v * 0.30));
+            double m = Math.Round(v * 0.18); // 间距随图标尺寸自动调整
             foreach (DockEntry en in entries)
             {
                 en.Img.Width = v;
                 en.Img.Height = v;
-                if (en.Caption != null) en.Caption.MaxWidth = v + 10;
+                en.Host.Margin = new Thickness(m, 0, m, 0);
+                if (en.Caption != null) en.Caption.MaxWidth = Math.Max(v + 10, 76);
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
             root.RowDefinitions[1].Height = new GridLength(v + 44, GridUnitType.Pixel); // 图标+两行名称
