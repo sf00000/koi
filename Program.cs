@@ -78,6 +78,9 @@ namespace Koi
         Grid root;
         Border nameLabel;          // 悬停时显示在图标上方的名称标签
         DockEntry hoveredEntry;
+        DockEntry reorderSource;   // 正在拖动排序的图标
+        Point reorderStart;
+        static readonly string ReorderFormat = "Koi-Reorder";
         DispatcherTimer saveTimer;
 
         public DockWindow()
@@ -224,6 +227,18 @@ namespace Koi
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
             img.ContextMenu = BuildItemMenu(en);
             en.Img = img;
+            img.Tag = en;
+
+            // 拖动排序：按住移动超过阈值进入拖放，划过其他图标实时换位
+            img.AllowDrop = true;
+            img.PreviewMouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e2)
+            {
+                reorderSource = en;
+                reorderStart = e2.GetPosition(row);
+            };
+            img.MouseMove += OnItemMouseMove;
+            img.DragOver += OnItemDragOver;
+            img.Drop += OnItemDrop;
 
             // 名称常显在图标下方，超长省略号
             TextBlock cap = new TextBlock();
@@ -235,6 +250,8 @@ namespace Koi
             cap.MaxWidth = IconSizePx() + 10;
             cap.Margin = new Thickness(0, 2, 0, 0);
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
+            cap.MouseLeftButtonUp += delegate { Launch(c); };
+            cap.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
             en.Caption = cap;
 
             StackPanel host = new StackPanel();
@@ -333,8 +350,52 @@ namespace Koi
 
         void OnBgLeftDown(object sender, MouseButtonEventArgs e)
         {
-            if (e.OriginalSource is Image) return; // 点在图标上时不拖动
+            if (e.OriginalSource != bg && e.OriginalSource != hint) return; // 点在图标/名称上时不拖动窗口
             DragMove();
+        }
+
+        // ---------------- 拖动排序 ----------------
+
+        void OnItemMouseMove(object sender, MouseEventArgs e)
+        {
+            if (reorderSource == null || e.LeftButton != MouseButtonState.Pressed) return;
+            Point p = e.GetPosition(row);
+            if (Math.Abs(p.X - reorderStart.X) < 5 && Math.Abs(p.Y - reorderStart.Y) < 5) return; // 原地点击不拖
+            DockEntry src = reorderSource;
+            reorderSource = null;
+            DataObject d = new DataObject(ReorderFormat, src);
+            try { DragDrop.DoDragDrop(src.Img, d, DragDropEffects.Move); }
+            finally { ScheduleSave(); } // 无论落在哪，顺序已是最终视觉状态
+        }
+
+        void OnItemDragOver(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(ReorderFormat)) return; // 文件拖放走窗口级处理器
+            DockEntry src = e.Data.GetData(ReorderFormat) as DockEntry;
+            DockEntry tgt = (sender as FrameworkElement).Tag as DockEntry;
+            if (src == null || tgt == null || src == tgt)
+            {
+                if (src != null) e.Effects = DragDropEffects.None;
+                e.Handled = true;
+                return;
+            }
+            int i1 = entries.IndexOf(src), i2 = entries.IndexOf(tgt);
+            if (i1 >= 0 && i2 >= 0 && i1 != i2)
+            {
+                entries.RemoveAt(i1);
+                entries.Insert(i2, src);
+                row.Children.Remove(src.Host);
+                row.Children.Insert(i2, src.Host);
+            }
+            e.Effects = DragDropEffects.Move;
+            e.Handled = true;
+        }
+
+        void OnItemDrop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(ReorderFormat)) return;
+            e.Handled = true;
+            ScheduleSave();
         }
 
         void OnFisheye(object sender, MouseEventArgs e)
@@ -630,6 +691,8 @@ namespace Koi
                 cfg.Left = Left;
                 cfg.Top = Top;
                 cfg.ShowNamesSpecified = true; // 确保该字段总是写入
+                cfg.Items.Clear();             // 顺序以当前 Dock 视觉顺序为准（拖动排序后）
+                foreach (DockEntry en in entries) cfg.Items.Add(en.Cfg);
                 using (FileStream fs = File.Create(ConfigFile))
                 {
                     XmlSerializer x = new XmlSerializer(typeof(Config));
