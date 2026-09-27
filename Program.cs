@@ -81,6 +81,7 @@ namespace Koi
         Border nameLabel;          // 悬停时显示在图标上方的名称标签
         DockEntry hoveredEntry;
         DockEntry reorderSource;   // 按住的图标（排序候选）
+        DockEntry dragEntry;       // 拖动中的图标
         Point reorderStart;
         bool dragStarted;          // 已进入拖动状态（图标跟随光标）
         TranslateTransform dragTranslate;
@@ -90,6 +91,7 @@ namespace Koi
         public DockWindow()
         {
             LoadConfig();
+            cfg.AutoStart = IsAutoStartRegistered(); // 以注册表实际状态为准，菜单勾选不再"虚亮"
 
             Title = "Koi 锦鲤坞";
             WindowStyle = WindowStyle.None;
@@ -106,20 +108,14 @@ namespace Koi
             UpdateHint();
 
             SourceInitialized += delegate { HideFromAltTab(); };
+            Deactivated += delegate { if (dragEntry != null) EndReorder(dragEntry); }; // 窗口失活时结束拖动，防止状态残留
             LocationChanged += delegate { ScheduleSave(); };
             Loaded += delegate
             {
                 if (cfg.Left.HasValue && cfg.Top.HasValue)
                 {
-                    // 恢复上次位置，并夹在虚拟屏幕范围内（防止换显示器后跑到屏幕外）
-                    double l = Math.Max(SystemParameters.VirtualScreenLeft - 40,
-                               Math.Min(cfg.Left.Value,
-                               SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - 80));
-                    double t = Math.Max(SystemParameters.VirtualScreenTop,
-                               Math.Min(cfg.Top.Value,
-                               SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - 60));
-                    Left = l;
-                    Top = t;
+                    Left = cfg.Left.Value;
+                    Top = cfg.Top.Value;
                 }
                 else
                 {
@@ -127,6 +123,8 @@ namespace Koi
                     Left = SystemParameters.WorkArea.Left + (SystemParameters.WorkArea.Width - ActualWidth) / 2;
                     Top = SystemParameters.WorkArea.Bottom - ActualHeight - 10;
                 }
+                // 按窗口实际所在显示器的工作区精确约束（避免多屏排列空隙、换分辨率后出界）
+                ClampToScreen();
             };
         }
 
@@ -275,6 +273,7 @@ namespace Koi
                 reorderStart = e2.GetPosition(row);
             };
             img.MouseMove += OnItemMouseMove;
+            img.LostMouseCapture += delegate { if (dragEntry == en) EndReorder(en); }; // 系统抢占捕获等中断场景
 
             // 名称常显在图标下方，超长省略号
             TextBlock cap = new TextBlock();
@@ -288,6 +287,7 @@ namespace Koi
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
             cap.MouseLeftButtonUp += delegate { Launch(c); };
             cap.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
+            cap.ContextMenu = BuildItemMenu(en); // 名称右键 = 图标右键，统一操作
             en.Caption = cap;
 
             StackPanel host = new StackPanel();
@@ -300,7 +300,7 @@ namespace Koi
             row.Children.Add(host);
             entries.Add(en);
             UpdateHint();
-            if (save) ScheduleSave();
+            if (save) { ClampToScreen(); ScheduleSave(); }
         }
 
         void UpdateHint()
@@ -362,10 +362,18 @@ namespace Koi
             auto.IsChecked = cfg.AutoStart;
             auto.Click += delegate
             {
-                cfg.AutoStart = !cfg.AutoStart;
-                auto.IsChecked = cfg.AutoStart;
-                ApplyAutoStart(cfg.AutoStart);
-                ScheduleSave();
+                bool target = !cfg.AutoStart;
+                if (ApplyAutoStart(target))
+                {
+                    cfg.AutoStart = target;
+                    auto.IsChecked = target;
+                    ScheduleSave();
+                }
+                else
+                {
+                    auto.IsChecked = cfg.AutoStart; // 写入失败，勾选回弹
+                    MessageBox.Show(this, "写入开机启动项失败，请检查权限后重试。", "Koi");
+                }
             };
             m.Items.Add(auto);
 
@@ -401,6 +409,7 @@ namespace Koi
             {
                 if (Math.Abs(p.X - reorderStart.X) < 4 && Math.Abs(p.Y - reorderStart.Y) < 4) return;
                 dragStarted = true;
+                dragEntry = src;
                 hoveredEntry = null;
                 nameLabel.Visibility = Visibility.Collapsed;
                 dragTranslate = new TranslateTransform();
@@ -409,12 +418,13 @@ namespace Koi
                 src.Scale.ScaleX = 1.12; src.Scale.ScaleY = 1.12; // 轻微放大表示"拿起"
                 src.Img.CaptureMouse();
             }
-            // 图标中心跟随光标
+            // 先清零平移量再量取槽位基准，避免把旧平移算进中心产生来回跳动
+            dragTranslate.X = 0;
             double cx = src.Host.TranslatePoint(new Point(src.Host.ActualWidth / 2.0, 0), row).X;
             dragTranslate.X = p.X - cx;
-            // 光标越过一个槽位宽度即换位
+            // 光标越过一个槽位宽度即换位（槽距含左右 Margin）
             int cur = entries.IndexOf(src);
-            double pitch = Math.Max(1, src.Host.ActualWidth);
+            double pitch = Math.Max(1, src.Host.ActualWidth + src.Host.Margin.Left + src.Host.Margin.Right);
             int target = cur + (int)Math.Round((p.X - cx) / pitch);
             if (target < 0) target = 0;
             if (target > entries.Count - 1) target = entries.Count - 1;
@@ -453,6 +463,7 @@ namespace Koi
                 }
                 ScheduleSave();
             }
+            dragEntry = null;
             reorderSource = null;
         }
 
@@ -516,10 +527,40 @@ namespace Koi
                 SetIconSize(IconSizePx() + (e.Delta > 0 ? 4 : -4));
         }
 
+        // 依据窗口当前所在显示器的工作区约束位置（WinForms 像素 ↔ WPF DIP 换算）
+        void ClampToScreen()
+        {
+            try
+            {
+                IntPtr h = new WindowInteropHelper(this).Handle;
+                if (h == IntPtr.Zero) return;
+                System.Windows.Forms.Screen s = System.Windows.Forms.Screen.FromHandle(h);
+                if (s == null) return;
+                double dx = 1, dy = 1;
+                PresentationSource ps = PresentationSource.FromVisual(this);
+                if (ps != null && ps.CompositionTarget != null)
+                {
+                    Matrix m = ps.CompositionTarget.TransformToDevice;
+                    dx = m.M11; dy = m.M22;
+                }
+                if (dx <= 0) dx = 1;
+                if (dy <= 0) dy = 1;
+                if (ActualWidth <= 0 || ActualHeight <= 0) return;
+                double l = s.WorkingArea.Left / dx;
+                double t = s.WorkingArea.Top / dy;
+                double r = s.WorkingArea.Right / dx;
+                double b = s.WorkingArea.Bottom / dy;
+                Left = Math.Max(l, Math.Min(Left, r - ActualWidth));
+                Top = Math.Max(t, Math.Min(Top, b - ActualHeight));
+            }
+            catch { }
+        }
+
         void SetIconSize(double v)
         {
             v = Math.Max(32, Math.Min(112, Math.Round(v)));
             if (v == IconSizePx()) return;
+            double bottom = Top + ActualHeight; // 底边锚定：变大向上生长
             cfg.IconSize = v;
             if (plusText != null) plusText.FontSize = Math.Max(16, Math.Round(v * 0.30));
             foreach (DockEntry en in entries)
@@ -529,6 +570,9 @@ namespace Koi
                 if (en.Caption != null) en.Caption.MaxWidth = v + 10;
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
+            UpdateLayout();
+            Top = bottom - ActualHeight; // 保持底边不动
+            ClampToScreen();
             ScheduleSave();
         }
 
@@ -597,10 +641,25 @@ namespace Koi
                 if (string.IsNullOrEmpty(name)) return false;
 
                 HashSet<int> pids = new HashSet<int>();
+                HashSet<int> pidsByName = new HashSet<int>();
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
-                    using (p) pids.Add(p.Id);
+                    using (p)
+                    {
+                        pidsByName.Add(p.Id);
+                        try
+                        {
+                            // 优先完整路径匹配，避免同名便携版/不同版本被误当成同一应用
+                            string exe = p.MainModule != null ? p.MainModule.FileName : null;
+                            if (exe != null && string.Compare(exe.Trim(), path.Trim(), true) == 0)
+                                pids.Add(p.Id);
+                        }
+                        catch { } // 权限不足等拿不到路径的进程，不计入精确匹配
+                    }
                 }
+                // 回退：部分应用（如豆包）启动器进程即退、实际运行进程路径不同，
+                // 严格路径匹配会永远失配，此时退回同名匹配
+                if (pids.Count == 0) pids = pidsByName;
                 if (pids.Count == 0) return false;
 
                 // 枚举该进程组的顶层窗口，挑"有标题且足够大"的真界面。
@@ -668,6 +727,14 @@ namespace Koi
                 "把「" + en.Cfg.Name + "」从 Dock 移除？（不会删除原文件）",
                 "Koi", MessageBoxButton.OKCancel, MessageBoxImage.Question);
             if (r != MessageBoxResult.OK) return;
+            // 清理悬停标签与拖动状态，避免残留
+            if (hoveredEntry == en)
+            {
+                hoveredEntry = null;
+                nameLabel.Visibility = Visibility.Collapsed;
+            }
+            if (dragEntry == en) EndReorder(en);
+            reorderSource = null;
             row.Children.Remove(en.Host); // Host = 图标+名称组合（此前误删旧的单图标元素导致移除不生效）
             entries.Remove(en);
             UpdateHint();
@@ -760,27 +827,31 @@ namespace Koi
 
         void LoadConfig()
         {
+            // 主配置损坏时回退 .bak；两份都没有才用默认值（不覆盖损坏文件，留给下次保存的备份链）
+            Config c = TryReadConfig(ConfigFile);
+            if (c == null) c = TryReadConfig(ConfigFile + ".bak");
+            if (c == null) return;
+            cfg.IconSize = c.IconSize >= 32 ? c.IconSize : 64;
+            if (cfg.IconSize > 112) cfg.IconSize = 112;
+            cfg.Opacity = c.Opacity >= 0.25 ? c.Opacity : 0.72; // 旧配置无此字段(=0)时用默认
+            if (cfg.Opacity > 1.0) cfg.Opacity = 1.0;
+            cfg.ShowNames = c.ShowNamesSpecified ? c.ShowNames : true; // 旧配置无此字段时默认显示
+            cfg.Left = c.Left;
+            cfg.Top = c.Top;
+            cfg.Topmost = c.Topmost;
+            cfg.AutoStart = c.AutoStart;
+            if (c.Items != null) cfg.Items = c.Items;
+        }
+
+        static Config TryReadConfig(string file)
+        {
             try
             {
-                if (!File.Exists(ConfigFile)) return;
-                using (FileStream fs = File.OpenRead(ConfigFile))
-                {
-                    XmlSerializer x = new XmlSerializer(typeof(Config));
-                    Config c = x.Deserialize(fs) as Config;
-                    if (c == null) return;
-                    cfg.IconSize = c.IconSize >= 32 ? c.IconSize : 64;
-                    if (cfg.IconSize > 112) cfg.IconSize = 112;
-                    cfg.Opacity = c.Opacity >= 0.25 ? c.Opacity : 0.72; // 旧配置无此字段(=0)时用默认
-                    if (cfg.Opacity > 1.0) cfg.Opacity = 1.0;
-                    cfg.ShowNames = c.ShowNamesSpecified ? c.ShowNames : true; // 旧配置无此字段时默认显示
-                    cfg.Left = c.Left;
-                    cfg.Top = c.Top;
-                    cfg.Topmost = c.Topmost;
-                    cfg.AutoStart = c.AutoStart;
-                    if (c.Items != null) cfg.Items = c.Items;
-                }
+                if (!File.Exists(file)) return null;
+                using (FileStream fs = File.OpenRead(file))
+                    return new XmlSerializer(typeof(Config)).Deserialize(fs) as Config;
             }
-            catch { }
+            catch { return null; }
         }
 
         void ScheduleSave()
@@ -805,11 +876,17 @@ namespace Koi
                 cfg.ShowNamesSpecified = true; // 确保该字段总是写入
                 cfg.Items.Clear();             // 顺序以当前 Dock 视觉顺序为准（拖动排序后）
                 foreach (DockEntry en in entries) cfg.Items.Add(en.Cfg);
-                using (FileStream fs = File.Create(ConfigFile))
+                // 先写临时文件再原子替换，写坏也只会损坏临时文件；.bak 保留上一份完整配置
+                string tmp = ConfigFile + ".tmp";
+                using (FileStream fs = File.Create(tmp))
                 {
                     XmlSerializer x = new XmlSerializer(typeof(Config));
                     x.Serialize(fs, cfg);
                 }
+                if (File.Exists(ConfigFile))
+                    File.Replace(tmp, ConfigFile, ConfigFile + ".bak");
+                else
+                    File.Move(tmp, ConfigFile);
             }
             catch { }
         }
@@ -820,20 +897,33 @@ namespace Koi
             base.OnClosed(e);
         }
 
-        void ApplyAutoStart(bool enable)
+        static readonly string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+        bool IsAutoStartRegistered()
         {
             try
             {
-                RegistryKey k = Registry.CurrentUser.OpenSubKey(
-                    @"Software\Microsoft\Windows\CurrentVersion\Run", true);
-                if (k == null) return;
-                if (enable)
-                    k.SetValue("Koi", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
-                else if (k.GetValue("Koi") != null)
-                    k.DeleteValue("Koi");
-                k.Close();
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKeyPath))
+                    return k != null && k.GetValue("Koi") != null;
             }
-            catch { }
+            catch { return false; }
+        }
+
+        bool ApplyAutoStart(bool enable)
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKeyPath, true))
+                {
+                    if (k == null) return false;
+                    if (enable)
+                        k.SetValue("Koi", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
+                    else if (k.GetValue("Koi") != null)
+                        k.DeleteValue("Koi");
+                    return true;
+                }
+            }
+            catch { return false; }
         }
 
         // 不出现在 Alt+Tab 切换列表里（避免干扰正常窗口切换）
