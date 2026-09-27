@@ -70,6 +70,8 @@ namespace Koi
         StackPanel row;
         TextBlock hint;
         Grid root;
+        Border nameLabel;          // 悬停时显示在图标上方的名称标签
+        DockEntry hoveredEntry;
         DispatcherTimer saveTimer;
 
         public DockWindow()
@@ -159,6 +161,25 @@ namespace Koi
 
             Grid.SetRow(bg, 1);
             root.Children.Add(bg);
+
+            // 悬停名称标签：悬浮在图标上方、跟随鱼眼位置，替代原生 tooltip
+            nameLabel = new Border();
+            nameLabel.CornerRadius = new CornerRadius(8);
+            nameLabel.Background = new SolidColorBrush(Color.FromArgb(0xE0, 0x20, 0x23, 0x28));
+            nameLabel.BorderBrush = normalBorder;
+            nameLabel.BorderThickness = new Thickness(1);
+            nameLabel.Padding = new Thickness(10, 4, 10, 5);
+            nameLabel.HorizontalAlignment = HorizontalAlignment.Left;
+            nameLabel.VerticalAlignment = VerticalAlignment.Top;
+            nameLabel.IsHitTestVisible = false;
+            nameLabel.Visibility = Visibility.Collapsed;
+            TextBlock nameText = new TextBlock();
+            nameText.Foreground = new SolidColorBrush(Color.FromArgb(0xFF, 0xEC, 0xEE, 0xF1));
+            nameText.FontSize = 12.5;
+            nameLabel.Child = nameText;
+            Grid.SetRowSpan(nameLabel, 2);
+            root.Children.Add(nameLabel);
+
             Content = root;
 
             bg.PreviewMouseLeftButtonDown += OnBgLeftDown;
@@ -190,8 +211,9 @@ namespace Koi
             en.Scale = new ScaleTransform(1, 1);
             img.RenderTransform = en.Scale;
             img.Margin = new Thickness(5, 0, 5, 0);
-            img.ToolTip = c.Name;
             img.SetValue(RenderOptions.BitmapScalingModeProperty, BitmapScalingMode.HighQuality);
+            img.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); };
+            img.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
             img.MouseLeftButtonUp += delegate { Launch(c); };
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
             img.ContextMenu = BuildItemMenu(en);
@@ -290,11 +312,33 @@ namespace Koi
                 en.Scale.ScaleX = s;
                 en.Scale.ScaleY = s;
                 Panel.SetZIndex(en.Img, s > 1.2 ? 10 : 0); // 放大的图标盖在邻居上面，同 Mac
+                if (en == hoveredEntry) PositionNameLabel(en);
             }
+        }
+
+        void ShowNameLabel(DockEntry en)
+        {
+            ((TextBlock)nameLabel.Child).Text = en.Cfg.Name;
+            nameLabel.Visibility = Visibility.Visible;
+            PositionNameLabel(en);
+        }
+
+        // 标签水平居中于当前图标、贴在 Dock 上沿之上
+        void PositionNameLabel(DockEntry en)
+        {
+            if (en.Img.ActualWidth <= 0) return;
+            nameLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double w = nameLabel.ActualWidth > 0 ? nameLabel.ActualWidth : nameLabel.DesiredSize.Width;
+            double cx = en.Img.TranslatePoint(new Point(en.Img.ActualWidth / 2.0, 0), root).X;
+            double left = cx - w / 2.0;
+            left = Math.Max(2, Math.Min(left, Math.Max(2, root.ActualWidth - w - 2)));
+            nameLabel.Margin = new Thickness(left, 0, 0, 0);
         }
 
         void OnFisheyeLeave(object sender, MouseEventArgs e)
         {
+            hoveredEntry = null;
+            nameLabel.Visibility = Visibility.Collapsed;
             foreach (DockEntry en in entries)
             {
                 en.Scale.ScaleX = 1.0;
@@ -399,7 +443,7 @@ namespace Koi
             if (!string.IsNullOrEmpty(s) && s.Trim() != en.Cfg.Name)
             {
                 en.Cfg.Name = s.Trim();
-                en.Img.ToolTip = en.Cfg.Name;
+                if (hoveredEntry == en) ((TextBlock)nameLabel.Child).Text = en.Cfg.Name;
                 ScheduleSave();
             }
         }
