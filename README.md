@@ -1,77 +1,127 @@
 # FloatDock — Mac 风格的 Windows 悬浮启动坞
 
-一个**零依赖**的单文件小工具：把常用软件做成桌面悬浮图标栏，
-鼠标划过时图标像 Mac Dock 一样鱼眼放大，滚轮直接调图标大小。
+把常用软件做成桌面悬浮图标栏：鼠标划过时图标像 Mac Dock 一样**鱼眼放大**，
+**滚轮**直接调图标大小。单文件、零依赖，Windows 10/11 开箱即用。
 
-无需安装任何运行库或框架——纯 C# WPF 单文件源码，用 Windows 自带的
-.NET Framework 编译器构建。
+![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![dependencies](https://img.shields.io/badge/dependencies-none-success)
+![license](https://img.shields.io/badge/license-MIT-green)
+![language](https://img.shields.io/badge/C%23-WPF-orange)
 
-![FloatDock](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![FloatDock](https://img.shields.io/badge/dependencies-none-success)
-![FloatDock](https://img.shields.io/badge/license-MIT-green)
+![FloatDock 运行效果](docs/dock.png)
 
-## 功能
+## ✨ 功能一览
 
-- **悬浮 Dock 栏**：深色半透明圆角背景 + 阴影，默认停在屏幕底部（任务栏上方），可整体拖到任意位置
-- **Mac 式鱼眼放大**：鼠标划过时图标放大并凸出到 Dock 上方，相邻图标按距离衰减联动
-- **滚轮调图标大小**：32–112px 随意缩放
-- **拖拽添加**：把 `.exe` / 快捷方式 / 文件夹 / 文档直接拖到 Dock 上即添加
-- **一键启动**：点击图标启动程序（走 Shell，支持 exe / lnk / 文件夹 / Store 应用）
-- **右键管理**：打开文件位置、重命名、从 Dock 移除；背景右键有添加程序、大小调整、总在最前、开机自启、退出
-- **记住一切**：位置、图标大小、项目列表保存在 `%APPDATA%\FloatDock\config.xml`
-- 不占任务栏、不出现在 Alt-Tab
-- **支持 Microsoft Store（UWP）应用**和自定义 png 图标（见下文）
-- 高清图标：优先从 Shell 图标缓存取 256px 版本
+- **悬浮 Dock 栏**：深色半透明圆角背景 + 投影，默认停在屏幕底部（任务栏正上方），可整体拖到任意位置
+- **Mac 式鱼眼放大**：鼠标划过时图标放大并凸出到 Dock 上方，相邻图标按距离联动
+- **滚轮调图标大小**：32–112px 无级缩放
+- **拖拽即添加**：`.exe` / 快捷方式 / 文件夹 / 文档，拖上去松手就完成
+- **右键全管理**：打开文件位置、重命名、移除；开机自启也在右键菜单里
+- **记住一切**：位置、大小、项目列表自动保存，重启后原样恢复
+- 干净：不占任务栏、不出现在 Alt-Tab、单进程 ~20MB 内存
+- 支持 **Microsoft Store（UWP）应用** 与**自定义 png 图标**
+- 高清图标：优先取 Shell 图标缓存的 256px 版本
 
-## 使用
+## 🚀 如何使用
 
-双击 `FloatDock.exe` 即可运行。自己编译见下文。
+### 第一步：启动
+
+双击 `FloatDock.exe`（本仓库若未附带 exe，按下方[自己编译](#%EF%B8%8F-自己编译)一节生成）。
+
+首次启动：Dock 出现在**屏幕底部居中、任务栏正上方**，里面有一条提示文字。
+之后每次启动都会恢复上次的图标、大小和位置。
+
+### 第二步：添加常用软件（三种方式任选）
+
+| 方式 | 做法 |
+| --- | --- |
+| **拖拽**（推荐） | 从桌面 / 开始菜单 / 文件夹里把程序图标、快捷方式或文件夹**直接拖到 Dock 上**，松手即添加 |
+| 右键菜单 | 右键 Dock 空白处 → **「添加程序…」** → 在弹窗中选择（可多选） |
+| 改配置文件 | 编辑 `%APPDATA%\FloatDock\config.xml`，在 `<Items>` 里加一条 `<ItemCfg>`，保存后重启 FloatDock |
+
+### 第三步：日常操作
 
 | 操作 | 效果 |
 | --- | --- |
-| 把程序 / 快捷方式 / 文件夹**拖到 Dock 上** | 添加图标 |
-| **点击图标** | 启动 |
-| 鼠标悬停 | 放大 + 显示名称 |
-| **滚轮** | 调整图标大小 |
-| **按住 Dock 空白处拖动** | 移动位置（会记住） |
-| 右键图标 | 打开 / 打开文件位置 / 重命名 / 移除 |
-| 右键空白处 | 添加程序 / 图标大小 / 总在最前 / 开机自启动 / 退出 |
+| **点击图标** | 启动程序 / 打开文件夹 |
+| 鼠标悬停 | 图标放大（鱼眼效果）+ 显示名称 |
+| **滚轮**（Dock 上滚动） | 放大 / 缩小所有图标（32–112px） |
+| **按住 Dock 空白处拖动** | 把 Dock 移到屏幕任意位置 |
+| 右键某个图标 | 打开 / 打开文件位置 / 重命名 / **从 Dock 移除** |
+| 右键 Dock 空白处 | 添加程序 / 图标增大减小 / 总在最前 / **开机自启动** / 退出 |
 
-## 编译（无需安装任何开发工具）
+### 推荐的初始化顺序
 
-使用 Windows 自带的 .NET Framework 4.x 编译器（Win10/11 均内置）：
+1. 把 5–8 个最常用的软件拖进 Dock
+2. 滚轮把图标调到顺眼的大小
+3. 拖到喜欢的位置（比如屏幕左侧竖放区、底部居中、或副屏）
+4. 右键勾选 **「开机自启动」**——它会自动注册当前 exe 路径，
+   所以上一步之前请先把 exe 放到一个不会移动的固定目录
+
+## 📦 Microsoft Store（UWP）应用与自定义图标
+
+Store 应用（如 Codex、终端等）装在带版本号、无权限的系统目录里，
+**拖拽和「添加程序」对它们无效**，需要改配置文件：
+
+1. 查应用 AUMID：PowerShell 运行 `Get-StartApps`，找到目标应用的 `AppID`
+   （形如 `OpenAI.Codex_2p2nqsd0c76g0!App`）
+2. 在 `%APPDATA%\FloatDock\config.xml` 的 `<Items>` 里加：
+
+   ```xml
+   <ItemCfg>
+     <Name>应用名</Name>
+     <Path>shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App</Path>
+     <Icon>C:\path\to\logo.png</Icon>
+   </ItemCfg>
+   ```
+
+3. `Icon` 指向一张 png（Store 应用取不到自动图标）。
+   高清 logo 的获取方式：`Get-AppxPackage -Name <包名>` 拿到 `InstallLocation`，
+   从里面的 `assets\` 目录挑一张大尺寸的拷出来
+4. 保存并重启 FloatDock
+
+`Icon` 字段对**任何**条目都有效——普通程序也能换成自定义 png 图标。
+
+## 🔧 自己编译（无需安装任何开发工具）
+
+使用 Windows 自带的 .NET Framework 编译器（Win10/11 均内置）：
 
 ```bat
 cd /d C:\Windows\Microsoft.NET\Framework64\v4.0.30319
-csc -nologo -target:winexe -out:G:\workbuddy\FloatDock\FloatDock.exe ^
+csc -nologo -target:winexe -out:<输出目录>\FloatDock.exe ^
   -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
   -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
   -r:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll ^
-  G:\workbuddy\FloatDock\Program.cs
+  <源码目录>\Program.cs
 ```
 
-源码是 C# 5 兼容语法（适配内置编译器），单文件 `Program.cs` 约 700 行，注释齐全，方便自行修改样式和行为。
+源码是 C# 5 兼容语法（适配内置编译器），单文件 `Program.cs` 约 700 行、注释齐全。
+改样式（背景色、圆角、放大幅度、间距等）直接编辑后重新编译即可。
 
-## Microsoft Store（UWP）应用与自定义图标
+## ❓ 常见问题
 
-Store 应用装在带版本号、无权限的系统目录里，不能直接写 exe 路径：
+**Q：图标放大后有的一侧发虚？**
+老程序只带 32px 图标，放大后略糊，属正常。可用 `Icon` 字段换高清 png。
 
-1. 查应用 AUMID：PowerShell 运行 `Get-StartApps`
-2. 在 `%APPDATA%\FloatDock\config.xml` 里加条目，`Path` 填 `shell:AppsFolder\<AUMID>`
-3. Store 应用取不到自动图标，把它的 logo（`Get-AppxPackage` 拿 InstallLocation 后从 `assets\` 拷一个高清 png）放到任意位置，用 `Icon` 字段指向它
+**Q：全屏游戏 / 看视频时 Dock 还浮在上面？**
+右键 Dock → 取消「总在最前」，需要时再勾回。
 
-`Icon` 字段对任何条目都有效——想给某个程序换自定义图片，填 png 路径即可。改完配置重启 FloatDock 生效。
+**Q：想临时藏起来？**
+目前没有隐藏热键。可以把它拖到屏幕边缘只留一条，或右键退出（配置会保留）。
 
-## 卸载
+**Q：开机自启注册的是哪个路径？**
+当前运行中的 exe 的完整路径。**先移动 exe 到固定目录，再开自启**，
+否则以后挪动文件夹会失效。
+
+**Q：配置存在哪？**
+`%APPDATA%\FloatDock\config.xml`（XmlSerializer 格式，可直接手工编辑）。
+图标文件缓存目录：`%APPDATA%\FloatDock\icons\`。
+
+## 🗑 卸载
 
 1. 右键 Dock → 取消勾选「开机自启动」→ 退出
 2. 删除 `FloatDock.exe`
 3. 删除 `%APPDATA%\FloatDock\` 文件夹
-
-## 已知边界
-
-- 极少数老程序只有 32px 图标，放大后会略糊
-- 「总在最前」开启时全屏应用下 Dock 也会置顶，需要时可在右键菜单关闭
 
 ## License
 
