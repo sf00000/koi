@@ -3,7 +3,7 @@
 //  名字取自锦鲤：鼠标划过时图标如锦鲤聚拢——Dock 放大效果的学名正是「鱼眼 fisheye」
 //  - 悬浮在桌面边缘的半透明圆角 Dock 栏，总在最前
 //  - 图标悬停时像 Mac 一样放大（鱼眼效果）
-//  - 滚轮直接调节图标大小（32~112px）
+//  - 滚轮直接调节图标大小（32~112px），Ctrl+滚轮调节背景透明度（25%~100%）
 //  - 拖拽 .exe / 快捷方式 / 文件夹到 Dock 上即可添加
 //  - 右键图标：打开 / 打开文件位置 / 重命名 / 移除
 //  - 右键背景：添加程序 / 调整图标 / 总在最前 / 开机自启 / 退出
@@ -41,6 +41,7 @@ namespace Koi
     public class Config
     {
         public double IconSize = 64;
+        public double Opacity = 0.72; // Dock 背景不透明度 0.25~1
         public double? Left;
         public double? Top;
         public bool Topmost = true;
@@ -133,7 +134,7 @@ namespace Koi
 
             bg = new Border();
             bg.CornerRadius = new CornerRadius(16);
-            bg.Background = new SolidColorBrush(Color.FromArgb(0xB8, 0x16, 0x19, 0x1E));
+            bg.Background = MakeBgBrush();
             bg.BorderBrush = normalBorder;
             bg.BorderThickness = new Thickness(1);
             bg.Padding = new Thickness(10, 8, 10, 10);
@@ -227,6 +228,14 @@ namespace Koi
             m.Items.Add(Mi("图标减小（滚轮 ↓）", delegate { SetIconSize(IconSizePx() - 6); }));
             m.Items.Add(new Separator());
 
+            MenuItem trans = new MenuItem();
+            trans.Header = "背景透明度";
+            trans.Items.Add(Mi("更透明（Ctrl+滚轮 ↓）", delegate { SetOpacity(cfg.Opacity - 0.08); }));
+            trans.Items.Add(Mi("更不透明（Ctrl+滚轮 ↑）", delegate { SetOpacity(cfg.Opacity + 0.08); }));
+            trans.Items.Add(Mi("恢复默认", delegate { SetOpacity(0.72); }));
+            m.Items.Add(trans);
+            m.Items.Add(new Separator());
+
             MenuItem top = Mi("总在最前", null);
             top.IsCheckable = true;
             top.IsChecked = Topmost;
@@ -301,7 +310,11 @@ namespace Koi
 
         void OnWheel(object sender, MouseWheelEventArgs e)
         {
-            SetIconSize(IconSizePx() + (e.Delta > 0 ? 4 : -4));
+            // 滚轮：图标大小；Ctrl+滚轮：Dock 背景透明度
+            if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                SetOpacity(cfg.Opacity + (e.Delta > 0 ? 0.06 : -0.06));
+            else
+                SetIconSize(IconSizePx() + (e.Delta > 0 ? 4 : -4));
         }
 
         void SetIconSize(double v)
@@ -315,6 +328,23 @@ namespace Koi
                 en.Img.Height = v;
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
+            ScheduleSave();
+        }
+
+        static readonly Color BaseBg = Color.FromRgb(0x16, 0x19, 0x1E);
+
+        Brush MakeBgBrush()
+        {
+            byte a = (byte)Math.Round(255 * cfg.Opacity);
+            return new SolidColorBrush(Color.FromArgb(a, BaseBg.R, BaseBg.G, BaseBg.B));
+        }
+
+        void SetOpacity(double v)
+        {
+            v = Math.Max(0.25, Math.Min(1.0, Math.Round(v, 2)));
+            if (v == cfg.Opacity) return;
+            cfg.Opacity = v;
+            bg.Background = MakeBgBrush();
             ScheduleSave();
         }
 
@@ -441,6 +471,8 @@ namespace Koi
                     if (c == null) return;
                     cfg.IconSize = c.IconSize >= 32 ? c.IconSize : 64;
                     if (cfg.IconSize > 112) cfg.IconSize = 112;
+                    cfg.Opacity = c.Opacity >= 0.25 ? c.Opacity : 0.72; // 旧配置无此字段(=0)时用默认
+                    if (cfg.Opacity > 1.0) cfg.Opacity = 1.0;
                     cfg.Left = c.Left;
                     cfg.Top = c.Top;
                     cfg.Topmost = c.Topmost;
