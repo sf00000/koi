@@ -1,14 +1,18 @@
-# FloatDock — Mac 风格的 Windows 悬浮启动坞
+# Koi 锦鲤坞 — Mac 风格的 Windows 悬浮启动坞
 
 把常用软件做成桌面悬浮图标栏：鼠标划过时图标像 Mac Dock 一样**鱼眼放大**，
 **滚轮**直接调图标大小。单文件、零依赖，Windows 10/11 开箱即用。
+
+> **为什么叫 Koi（锦鲤）？**
+> 鼠标划过时图标聚拢放大的效果，学名叫「鱼眼（fisheye）」——
+> 锦鲤浮于水面，指尖所至，鱼群聚拢。好记，也点题。
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![dependencies](https://img.shields.io/badge/dependencies-none-success)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![language](https://img.shields.io/badge/C%23-WPF-orange)
 
-![FloatDock 运行效果](docs/dock.png)
+![Koi 运行效果](docs/dock.png)
 
 ## ✨ 功能一览
 
@@ -26,7 +30,7 @@
 
 ### 第一步：启动
 
-双击 `FloatDock.exe`（本仓库若未附带 exe，按下方[自己编译](#%EF%B8%8F-自己编译)一节生成）。
+双击 `Koi.exe`（本仓库若未附带 exe，按下方[自己编译](#%EF%B8%8F-自己编译)一节生成）。
 
 首次启动：Dock 出现在**屏幕底部居中、任务栏正上方**，里面有一条提示文字。
 之后每次启动都会恢复上次的图标、大小和位置。
@@ -37,7 +41,7 @@
 | --- | --- |
 | **拖拽**（推荐） | 从桌面 / 开始菜单 / 文件夹里把程序图标、快捷方式或文件夹**直接拖到 Dock 上**，松手即添加 |
 | 右键菜单 | 右键 Dock 空白处 → **「添加程序…」** → 在弹窗中选择（可多选） |
-| 改配置文件 | 编辑 `%APPDATA%\FloatDock\config.xml`，在 `<Items>` 里加一条 `<ItemCfg>`，保存后重启 FloatDock |
+| 改配置文件 | 编辑 `%APPDATA%\Koi\config.xml`，在 `<Items>` 里加一条 `<ItemCfg>`，保存后重启 Koi |
 
 ### 第三步：日常操作
 
@@ -65,7 +69,7 @@ Store 应用（如 Codex、终端等）装在带版本号、无权限的系统�
 
 1. 查应用 AUMID：PowerShell 运行 `Get-StartApps`，找到目标应用的 `AppID`
    （形如 `OpenAI.Codex_2p2nqsd0c76g0!App`）
-2. 在 `%APPDATA%\FloatDock\config.xml` 的 `<Items>` 里加：
+2. 在 `%APPDATA%\Koi\config.xml` 的 `<Items>` 里加：
 
    ```xml
    <ItemCfg>
@@ -78,7 +82,7 @@ Store 应用（如 Codex、终端等）装在带版本号、无权限的系统�
 3. `Icon` 指向一张 png（Store 应用取不到自动图标）。
    高清 logo 的获取方式：`Get-AppxPackage -Name <包名>` 拿到 `InstallLocation`，
    从里面的 `assets\` 目录挑一张大尺寸的拷出来
-4. 保存并重启 FloatDock
+4. 保存并重启 Koi
 
 `Icon` 字段对**任何**条目都有效——普通程序也能换成自定义 png 图标。
 
@@ -88,7 +92,7 @@ Store 应用（如 Codex、终端等）装在带版本号、无权限的系统�
 
 ```bat
 cd /d C:\Windows\Microsoft.NET\Framework64\v4.0.30319
-csc -nologo -target:winexe -out:<输出目录>\FloatDock.exe ^
+csc -nologo -target:winexe -out:<输出目录>\Koi.exe ^
   -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
   -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
   -r:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll ^
@@ -114,14 +118,14 @@ csc -nologo -target:winexe -out:<输出目录>\FloatDock.exe ^
 否则以后挪动文件夹会失效。
 
 **Q：配置存在哪？**
-`%APPDATA%\FloatDock\config.xml`（XmlSerializer 格式，可直接手工编辑）。
-图标文件缓存目录：`%APPDATA%\FloatDock\icons\`。
+`%APPDATA%\Koi\config.xml`（XmlSerializer 格式，可直接手工编辑）。
+图标文件缓存目录：`%APPDATA%\Koi\icons\`。
 
 ## 🗑 卸载
 
 1. 右键 Dock → 取消勾选「开机自启动」→ 退出
-2. 删除 `FloatDock.exe`
-3. 删除 `%APPDATA%\FloatDock\` 文件夹
+2. 删除 `Koi.exe`
+3. 删除 `%APPDATA%\Koi\` 文件夹
 
 ## License
 

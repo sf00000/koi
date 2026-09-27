@@ -1,12 +1,13 @@
 // =====================================================================
-//  FloatDock - Mac 风格的 Windows 悬浮启动坞
+//  Koi（锦鲤坞）- Mac 风格的 Windows 悬浮启动坞
+//  名字取自锦鲤：鼠标划过时图标如锦鲤聚拢——Dock 放大效果的学名正是「鱼眼 fisheye」
 //  - 悬浮在桌面边缘的半透明圆角 Dock 栏，总在最前
 //  - 图标悬停时像 Mac 一样放大（鱼眼效果）
 //  - 滚轮直接调节图标大小（32~112px）
 //  - 拖拽 .exe / 快捷方式 / 文件夹到 Dock 上即可添加
 //  - 右键图标：打开 / 打开文件位置 / 重命名 / 移除
 //  - 右键背景：添加程序 / 调整图标 / 总在最前 / 开机自启 / 退出
-//  - 位置、大小、项目列表保存在 %APPDATA%\FloatDock\config.xml
+//  - 位置、大小、项目列表保存在 %APPDATA%\Koi\config.xml
 //  编译（系统自带 .NET Framework，无需安装任何东西）：
 //    csc /target:winexe /r:... Program.cs
 // =====================================================================
@@ -28,7 +29,7 @@ using GdiIcon = System.Drawing.Icon;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-namespace FloatDock
+namespace Koi
 {
     public class ItemCfg
     {
@@ -57,7 +58,7 @@ namespace FloatDock
     public class DockWindow : Window
     {
         static readonly string ConfigDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FloatDock");
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
         static readonly string ConfigFile = Path.Combine(ConfigDir, "config.xml");
 
         readonly Config cfg = new Config();
@@ -74,7 +75,7 @@ namespace FloatDock
         {
             LoadConfig();
 
-            Title = "FloatDock";
+            Title = "Koi 锦鲤坞";
             WindowStyle = WindowStyle.None;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
@@ -325,7 +326,7 @@ namespace FloatDock
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, "无法启动「" + c.Name + "」：" + ex.Message, "FloatDock");
+                MessageBox.Show(this, "无法启动「" + c.Name + "」：" + ex.Message, "Koi");
             }
         }
 
@@ -350,7 +351,7 @@ namespace FloatDock
         {
             MessageBoxResult r = MessageBox.Show(this,
                 "把「" + en.Cfg.Name + "」从 Dock 移除？（不会删除原文件）",
-                "FloatDock", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+                "Koi", MessageBoxButton.OKCancel, MessageBoxImage.Question);
             if (r != MessageBoxResult.OK) return;
             row.Children.Remove(en.Img);
             entries.Remove(en);
@@ -492,9 +493,9 @@ namespace FloatDock
                     @"Software\Microsoft\Windows\CurrentVersion\Run", true);
                 if (k == null) return;
                 if (enable)
-                    k.SetValue("FloatDock", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
-                else if (k.GetValue("FloatDock") != null)
-                    k.DeleteValue("FloatDock");
+                    k.SetValue("Koi", "\"" + Process.GetCurrentProcess().MainModule.FileName + "\"");
+                else if (k.GetValue("Koi") != null)
+                    k.DeleteValue("Koi");
                 k.Close();
             }
             catch { }
@@ -690,10 +691,10 @@ namespace FloatDock
         static void Main()
         {
             bool createdNew;
-            mutex = new Mutex(true, "FloatDock_SingleInstance", out createdNew);
+            mutex = new Mutex(true, "Koi_SingleInstance", out createdNew);
             if (!createdNew)
             {
-                MessageBox.Show("FloatDock 已经在运行了（看看屏幕底部边缘）。", "FloatDock");
+                MessageBox.Show("Koi 已经在运行了（看看屏幕底部边缘）。", "Koi");
                 return;
             }
 
