@@ -200,6 +200,22 @@ csc -nologo -target:winexe -out:G:\workbuddy\Koi\Koi.exe ^
 - **写不进 Koi.exe**：程序还在运行，先右键 Dock → 退出
 - **提示找不到元数据文件**：必须在 `Framework64\v4.0.30319` 目录下执行（WPF 程序集的相对路径才有效），或直接用 `build.bat`
 
+## 🏷 版本与发版
+
+当前版本见仓库根目录 `VERSION` 文件（也会显示在右键菜单顶部）。
+
+每次更新代码后，运行一键发版脚本，版本号自动递增并完成全套发布：
+
+```powershell
+powershell -File release.ps1           # 补丁位 +1（默认，修 bug）
+powershell -File release.ps1 minor     # 次位 +1（新功能）
+powershell -File release.ps1 major     # 主位 +1（大改版）
+```
+
+脚本自动完成：递增版本号 → 同步 VERSION / Program.cs → 编译 → 提交并打 tag（如 `v1.0.1`）→ 推送 → 创建 GitHub Release 并附上最新的 `Koi.exe`。
+
+历史版本在 [Releases](https://github.com/sf00000/koi/releases) 页面下载。
+
 ## ❓ 常见问题
 
 **Q：图标放大后有的一侧发虚？**
