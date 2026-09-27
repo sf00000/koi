@@ -226,14 +226,9 @@ namespace Koi
             m.Items.Add(new Separator());
             m.Items.Add(Mi("图标增大（滚轮 ↑）", delegate { SetIconSize(IconSizePx() + 6); }));
             m.Items.Add(Mi("图标减小（滚轮 ↓）", delegate { SetIconSize(IconSizePx() - 6); }));
-            m.Items.Add(new Separator());
-
-            MenuItem trans = new MenuItem();
-            trans.Header = "背景透明度";
-            trans.Items.Add(Mi("更透明（Ctrl+滚轮 ↓）", delegate { SetOpacity(cfg.Opacity - 0.08); }));
-            trans.Items.Add(Mi("更不透明（Ctrl+滚轮 ↑）", delegate { SetOpacity(cfg.Opacity + 0.08); }));
-            trans.Items.Add(Mi("恢复默认", delegate { SetOpacity(0.72); }));
-            m.Items.Add(trans);
+            m.Items.Add(Mi("背景更透明（Ctrl+滚轮 ↓）", delegate { SetOpacity(cfg.Opacity - 0.08); }));
+            m.Items.Add(Mi("背景更不透明（Ctrl+滚轮 ↑）", delegate { SetOpacity(cfg.Opacity + 0.08); }));
+            m.Items.Add(Mi("恢复默认透明度", delegate { SetOpacity(0.72); }));
             m.Items.Add(new Separator());
 
             MenuItem top = Mi("总在最前", null);
