@@ -110,6 +110,7 @@ namespace Koi
             SourceInitialized += delegate { HideFromAltTab(); };
             Deactivated += delegate { if (dragEntry != null) EndReorder(dragEntry); }; // 窗口失活时结束拖动，防止状态残留
             LocationChanged += delegate { ScheduleSave(); };
+            SizeChanged += delegate { OnWindowSizeChanged(); }; // 内容变化后统一做屏幕约束
             Loaded += delegate
             {
                 if (cfg.Left.HasValue && cfg.Top.HasValue)
@@ -300,7 +301,7 @@ namespace Koi
             row.Children.Add(host);
             entries.Add(en);
             UpdateHint();
-            if (save) { ClampToScreen(); ScheduleSave(); }
+            if (save) ScheduleSave(); // 屏幕约束统一由 SizeChanged 处理（此时布局尚未刷新）
         }
 
         void UpdateHint()
@@ -434,6 +435,10 @@ namespace Koi
                 entries.Insert(target, src);
                 row.Children.Remove(src.Host);
                 row.Children.Insert(target, src.Host);
+                // 换位后槽位基准变了：重新落基准并贴回光标，消除"新槽位＋旧位移"的跳位
+                dragTranslate.X = 0;
+                double ncx = src.Host.TranslatePoint(new Point(src.Host.ActualWidth / 2.0, 0), row).X;
+                dragTranslate.X = p.X - ncx;
             }
         }
 
@@ -556,11 +561,69 @@ namespace Koi
             catch { }
         }
 
-        void SetIconSize(double v)
+        // 所在显示器工作区允许的最大 Dock 宽度（像素换算为 DIP）
+        double MaxDockWidth()
         {
-            v = Math.Max(32, Math.Min(112, Math.Round(v)));
+            try
+            {
+                IntPtr h = new WindowInteropHelper(this).Handle;
+                if (h == IntPtr.Zero) return double.MaxValue;
+                System.Windows.Forms.Screen s = System.Windows.Forms.Screen.FromHandle(h);
+                if (s == null) return double.MaxValue;
+                double dx = 1;
+                PresentationSource ps = PresentationSource.FromVisual(this);
+                if (ps != null && ps.CompositionTarget != null)
+                    dx = ps.CompositionTarget.TransformToDevice.M11;
+                if (dx <= 0) dx = 1;
+                return (s.WorkingArea.Width / dx) * 0.92;
+            }
+            catch { return double.MaxValue; }
+        }
+
+        bool fitting; // 防止 SizeChanged → 缩图标 → SizeChanged 递归
+
+        // 窗口尺寸随内容变化后统一处理：宽过屏幕则自动缩图标，再约束位置
+        void OnWindowSizeChanged()
+        {
+            if (fitting) return;
+            fitting = true;
+            try
+            {
+                double bottom = Top + ActualHeight;
+                int guard = 0;
+                double maxW = MaxDockWidth();
+                while (ActualWidth > maxW && cfg.IconSize > 32 && guard++ < 40)
+                    ApplyIconSize(Math.Max(32, cfg.IconSize - 4));
+                Top = bottom - ActualHeight;
+                ClampToScreen();
+            }
+            finally { fitting = false; }
+        }
+
+        void SetIconSize(double requested)
+        {
+            double v = Math.Max(32, Math.Min(112, Math.Round(requested)));
+            // 图标过多时按屏幕宽度封顶，避免窗口比屏幕还宽
+            try
+            {
+                int n = Math.Max(1, entries.Count);
+                double maxW = MaxDockWidth();
+                while (v > 32 && 56 + n * (v + 10) > maxW) v -= 4;
+            }
+            catch { }
+            v = Math.Round(v);
             if (v == IconSizePx()) return;
             double bottom = Top + ActualHeight; // 底边锚定：变大向上生长
+            fitting = true;
+            try { ApplyIconSize(v); }
+            finally { fitting = false; }
+            Top = bottom - ActualHeight;
+            ClampToScreen();
+            ScheduleSave();
+        }
+
+        void ApplyIconSize(double v)
+        {
             cfg.IconSize = v;
             if (plusText != null) plusText.FontSize = Math.Max(16, Math.Round(v * 0.30));
             foreach (DockEntry en in entries)
@@ -571,9 +634,6 @@ namespace Koi
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
             UpdateLayout();
-            Top = bottom - ActualHeight; // 保持底边不动
-            ClampToScreen();
-            ScheduleSave();
         }
 
         static readonly Color BaseBg = Color.FromRgb(0x16, 0x19, 0x1E);
@@ -640,26 +700,34 @@ namespace Koi
                 string name = Path.GetFileNameWithoutExtension(path);
                 if (string.IsNullOrEmpty(name)) return false;
 
+                // 精确匹配：进程 exe 与配置路径一致，或位于配置 exe 所在目录之内
+                //（覆盖豆包这类"Application\Doubao.exe 启动器 + app\Doubao.exe 真身"布局）。
+                // 不做同名兜底：不同目录的同名程序互不干扰，点击 B 目录的就启动 B 的。
+                string baseDir = null;
+                try { baseDir = Path.GetDirectoryName(path.Trim()); } catch { }
                 HashSet<int> pids = new HashSet<int>();
-                HashSet<int> pidsByName = new HashSet<int>();
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
                     using (p)
                     {
-                        pidsByName.Add(p.Id);
                         try
                         {
-                            // 优先完整路径匹配，避免同名便携版/不同版本被误当成同一应用
                             string exe = p.MainModule != null ? p.MainModule.FileName : null;
-                            if (exe != null && string.Compare(exe.Trim(), path.Trim(), true) == 0)
+                            if (exe == null) continue;
+                            exe = exe.Trim();
+                            if (string.Compare(exe, path.Trim(), true) == 0) { pids.Add(p.Id); continue; }
+                            if (baseDir == null) continue;
+                            string dir = Path.GetDirectoryName(exe);
+                            if (dir == null) continue;
+                            if (dir.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase)
+                                && (dir.Length == baseDir.Length
+                                    || dir[baseDir.Length] == Path.DirectorySeparatorChar
+                                    || dir[baseDir.Length] == Path.AltDirectorySeparatorChar))
                                 pids.Add(p.Id);
                         }
-                        catch { } // 权限不足等拿不到路径的进程，不计入精确匹配
+                        catch { } // 权限不足拿不到路径的进程不参与匹配
                     }
                 }
-                // 回退：部分应用（如豆包）启动器进程即退、实际运行进程路径不同，
-                // 严格路径匹配会永远失配，此时退回同名匹配
-                if (pids.Count == 0) pids = pidsByName;
                 if (pids.Count == 0) return false;
 
                 // 枚举该进程组的顶层窗口，挑"有标题且足够大"的真界面。
@@ -827,10 +895,19 @@ namespace Koi
 
         void LoadConfig()
         {
-            // 主配置损坏时回退 .bak；两份都没有才用默认值（不覆盖损坏文件，留给下次保存的备份链）
+            // 主配置损坏时回退 .bak；两份都读不出：归档损坏文件留证并提示，
+            // 避免随后保存时被默认配置悄悄覆盖丢失现场
             Config c = TryReadConfig(ConfigFile);
             if (c == null) c = TryReadConfig(ConfigFile + ".bak");
-            if (c == null) return;
+            if (c == null)
+            {
+                bool hadFile = File.Exists(ConfigFile) || File.Exists(ConfigFile + ".bak");
+                ArchiveCorruptConfig();
+                if (hadFile)
+                    MessageBox.Show("Koi 配置文件损坏且无法恢复，原文件已归档为 config.xml.corrupt-*，本次以默认设置启动。", "Koi",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             cfg.IconSize = c.IconSize >= 32 ? c.IconSize : 64;
             if (cfg.IconSize > 112) cfg.IconSize = 112;
             cfg.Opacity = c.Opacity >= 0.25 ? c.Opacity : 0.72; // 旧配置无此字段(=0)时用默认
@@ -841,6 +918,17 @@ namespace Koi
             cfg.Topmost = c.Topmost;
             cfg.AutoStart = c.AutoStart;
             if (c.Items != null) cfg.Items = c.Items;
+        }
+
+        static void ArchiveCorruptConfig()
+        {
+            try
+            {
+                string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                if (File.Exists(ConfigFile)) File.Move(ConfigFile, ConfigFile + ".corrupt-" + stamp);
+                if (File.Exists(ConfigFile + ".bak")) File.Move(ConfigFile + ".bak", ConfigFile + ".bak.corrupt-" + stamp);
+            }
+            catch { }
         }
 
         static Config TryReadConfig(string file)
@@ -887,6 +975,20 @@ namespace Koi
                     File.Replace(tmp, ConfigFile, ConfigFile + ".bak");
                 else
                     File.Move(tmp, ConfigFile);
+            }
+            catch (Exception ex)
+            {
+                AppendErrorLog("保存配置失败：" + ex.Message);
+            }
+        }
+
+        static void AppendErrorLog(string msg)
+        {
+            try
+            {
+                Directory.CreateDirectory(ConfigDir);
+                File.AppendAllText(Path.Combine(ConfigDir, "errors.log"),
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss ") + msg + Environment.NewLine);
             }
             catch { }
         }
