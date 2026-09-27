@@ -149,7 +149,7 @@ namespace Koi
             RowDefinition overflow = new RowDefinition();
             overflow.Height = new GridLength(IconSizePx() * 0.8, GridUnitType.Pixel); // 图标放大时向上凸出的空间
             RowDefinition body = new RowDefinition();
-            body.Height = new GridLength(IconSizePx() + 10, GridUnitType.Pixel); // 图标条+名称下缘
+            body.Height = new GridLength(IconSizePx() + 44, GridUnitType.Pixel); // 图标+两行名称
 
             root.RowDefinitions.Add(overflow);
             root.RowDefinitions.Add(body);
@@ -300,14 +300,18 @@ namespace Koi
             img.MouseMove += OnItemMouseMove;
             img.LostMouseCapture += delegate { if (dragEntry == en) EndReorder(en); }; // 系统抢占捕获等中断场景
 
-            // 名称常显在图标下方，超长省略号
+            // 名称常显在图标下方，可读性优先：最多两行，超出再省略（悬停胶囊看全名）
             TextBlock cap = new TextBlock();
             cap.Text = c.Name;
             cap.FontSize = 11;
+            cap.LineHeight = 14;
+            cap.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
             cap.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xD3, 0xD7, 0xDC));
             cap.TextAlignment = TextAlignment.Center;
+            cap.TextWrapping = TextWrapping.Wrap;
             cap.TextTrimming = TextTrimming.CharacterEllipsis;
             cap.MaxWidth = IconSizePx() + 10;
+            cap.MaxHeight = 30; // 两行封顶
             cap.Margin = new Thickness(0, 2, 0, 0);
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
             cap.MouseLeftButtonUp += delegate { Launch(c); };
@@ -656,20 +660,15 @@ namespace Koi
             catch { }
         }
 
-        // 窗口尺寸随内容变化后统一处理：宽过屏幕则自动缩图标，再约束位置
+        // 窗口尺寸随内容变化后：更新宽度上限并约束位置。
+        // 不自动缩小图标——名称可读性优先，放不下就走横向滚动
         void OnWindowSizeChanged()
         {
             if (fitting) return;
             fitting = true;
             try
             {
-                MaxWidth = MaxDockWidth(); // 窗口宽度上限，超出部分进横向滚动
-                double bottom = Top + ActualHeight;
-                int guard = 0;
-                double maxW = MaxDockWidth();
-                while (ActualWidth > maxW && cfg.IconSize > 32 && guard++ < 40)
-                    ApplyIconSize(Math.Max(32, cfg.IconSize - 4));
-                Top = bottom - ActualHeight;
+                MaxWidth = MaxDockWidth();
                 ClampToScreen();
             }
             finally { fitting = false; }
@@ -678,15 +677,6 @@ namespace Koi
         void SetIconSize(double requested)
         {
             double v = Math.Max(32, Math.Min(112, Math.Round(requested)));
-            // 图标过多时按屏幕宽度封顶，避免窗口比屏幕还宽
-            try
-            {
-                int n = Math.Max(1, entries.Count);
-                double maxW = MaxDockWidth();
-                while (v > 32 && 56 + n * (v + 10) > maxW) v -= 4;
-            }
-            catch { }
-            v = Math.Round(v);
             if (v == IconSizePx()) return;
             double bottom = Top + ActualHeight; // 底边锚定：变大向上生长
             fitting = true;
@@ -708,7 +698,7 @@ namespace Koi
                 if (en.Caption != null) en.Caption.MaxWidth = v + 10;
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
-            root.RowDefinitions[1].Height = new GridLength(v + 10, GridUnitType.Pixel);
+            root.RowDefinitions[1].Height = new GridLength(v + 44, GridUnitType.Pixel); // 图标+两行名称
             if (scrollInner != null) scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(v * 0.8), 12, 10);
             UpdateLayout();
         }
