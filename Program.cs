@@ -86,6 +86,8 @@ namespace Koi
         bool dragStarted;          // 已进入拖动状态（图标跟随光标）
         TranslateTransform dragTranslate;
         TextBlock plusText;        // 左上角"+"按钮的文字
+        ScrollViewer scroller;     // 图标超宽时的横向滚动容器
+        static bool configLoadFailed; // 损坏配置归档失败时暂停保存，保护原文件
         DispatcherTimer saveTimer;
 
         public DockWindow()
@@ -125,7 +127,7 @@ namespace Koi
                     Top = SystemParameters.WorkArea.Bottom - ActualHeight - 10;
                 }
                 // 按窗口实际所在显示器的工作区精确约束（避免多屏排列空隙、换分辨率后出界）
-                ClampToScreen();
+                OnWindowSizeChanged();
             };
         }
 
@@ -192,7 +194,12 @@ namespace Koi
             StackPanel outer = new StackPanel();
             outer.Orientation = Orientation.Horizontal;
             outer.Children.Add(plus);
-            outer.Children.Add(row);
+            // 图标行放进横向滚动容器：图标缩到 32px 仍放不下时可滚动访问
+            scroller = new ScrollViewer();
+            scroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden;
+            scroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            scroller.Content = row;
+            outer.Children.Add(scroller);
             bg.Child = outer;
 
             hint = new TextBlock();
@@ -423,6 +430,13 @@ namespace Koi
             dragTranslate.X = 0;
             double cx = src.Host.TranslatePoint(new Point(src.Host.ActualWidth / 2.0, 0), row).X;
             dragTranslate.X = p.X - cx;
+            // 拖到可视区边缘时自动横向滚动（超宽滚动场景）
+            if (scroller != null && scroller.ScrollableWidth > 0)
+            {
+                double xIn = e.GetPosition(scroller).X;
+                if (xIn < 30) scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - 10);
+                else if (xIn > scroller.ViewportWidth - 30) scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset + 10);
+            }
             // 光标越过一个槽位宽度即换位（槽距含左右 Margin）
             int cur = entries.IndexOf(src);
             double pitch = Math.Max(1, src.Host.ActualWidth + src.Host.Margin.Left + src.Host.Margin.Right);
@@ -435,10 +449,14 @@ namespace Koi
                 entries.Insert(target, src);
                 row.Children.Remove(src.Host);
                 row.Children.Insert(target, src.Host);
-                // 换位后槽位基准变了：重新落基准并贴回光标，消除"新槽位＋旧位移"的跳位
+                // Insert 只改布局树，坐标要等布局刷新才是新槽位的——强制同步刷新
+                row.UpdateLayout();
+                // 重新落基准并贴回光标，消除"新槽位＋旧位移"的跳位
                 dragTranslate.X = 0;
                 double ncx = src.Host.TranslatePoint(new Point(src.Host.ActualWidth / 2.0, 0), row).X;
                 dragTranslate.X = p.X - ncx;
+                // 刷新过程中捕获可能已被系统剥夺：收尾，防止图标悬空
+                if (!src.Img.IsMouseCaptured) { EndReorder(src); return; }
             }
         }
 
@@ -525,7 +543,16 @@ namespace Koi
 
         void OnWheel(object sender, MouseWheelEventArgs e)
         {
-            // 滚轮：图标大小；Ctrl+滚轮：Dock 背景透明度
+            // 滚轮：图标大小；Ctrl+滚轮：Dock 背景透明度；Shift+滚轮：横向滚动（超宽时）
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0)
+            {
+                if (scroller != null && scroller.ScrollableWidth > 0)
+                {
+                    scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - e.Delta);
+                    e.Handled = true;
+                }
+                return;
+            }
             if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
                 SetOpacity(cfg.Opacity + (e.Delta > 0 ? 0.06 : -0.06));
             else
@@ -589,6 +616,7 @@ namespace Koi
             fitting = true;
             try
             {
+                MaxWidth = MaxDockWidth(); // 窗口宽度上限，超出部分进横向滚动
                 double bottom = Top + ActualHeight;
                 int guard = 0;
                 double maxW = MaxDockWidth();
@@ -691,6 +719,12 @@ namespace Koi
 
         class WinCand { public IntPtr H; public bool Visible; public long Area; }
 
+        // "启动器外壳 + 子目录真身"布局的应用名单：点击这些应用允许目录级进程匹配
+        static readonly HashSet<string> LauncherApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "doubao",
+        };
+
         bool TryActivateRunning(string path)
         {
             try
@@ -700,11 +734,16 @@ namespace Koi
                 string name = Path.GetFileNameWithoutExtension(path);
                 if (string.IsNullOrEmpty(name)) return false;
 
-                // 精确匹配：进程 exe 与配置路径一致，或位于配置 exe 所在目录之内
-                //（覆盖豆包这类"Application\Doubao.exe 启动器 + app\Doubao.exe 真身"布局）。
-                // 不做同名兜底：不同目录的同名程序互不干扰，点击 B 目录的就启动 B 的。
+                // 精确匹配：进程 exe 与配置路径一致。
+                // 已知"启动器外壳 + 子目录真身"布局的应用（见 LauncherApps）额外允许
+                // 配置 exe 所在目录内的进程；普通程序不做目录放宽，
+                // 避免点击 C:\Tools\Editor.exe 激活 C:\Tools\Old\Editor.exe。
                 string baseDir = null;
-                try { baseDir = Path.GetDirectoryName(path.Trim()); } catch { }
+                bool allowDirTree = LauncherApps.Contains(name);
+                if (allowDirTree)
+                {
+                    try { baseDir = Path.GetDirectoryName(path.Trim()); } catch { }
+                }
                 HashSet<int> pids = new HashSet<int>();
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
@@ -716,7 +755,7 @@ namespace Koi
                             if (exe == null) continue;
                             exe = exe.Trim();
                             if (string.Compare(exe, path.Trim(), true) == 0) { pids.Add(p.Id); continue; }
-                            if (baseDir == null) continue;
+                            if (!allowDirTree || baseDir == null) continue;
                             string dir = Path.GetDirectoryName(exe);
                             if (dir == null) continue;
                             if (dir.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase)
@@ -902,10 +941,18 @@ namespace Koi
             if (c == null)
             {
                 bool hadFile = File.Exists(ConfigFile) || File.Exists(ConfigFile + ".bak");
-                ArchiveCorruptConfig();
+                bool archived = hadFile && ArchiveCorruptConfig();
                 if (hadFile)
-                    MessageBox.Show("Koi 配置文件损坏且无法恢复，原文件已归档为 config.xml.corrupt-*，本次以默认设置启动。", "Koi",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                {
+                    configLoadFailed = !archived; // 归档失败：暂停后续保存，避免覆盖损坏原文件
+                    AppendErrorLog(archived
+                        ? "配置损坏，已归档为 config.xml.corrupt-*，以默认设置启动。"
+                        : "配置损坏且归档失败，已暂停配置保存以保护原文件。");
+                    MessageBox.Show(archived
+                        ? "Koi 配置文件损坏且无法恢复，原文件已归档为 config.xml.corrupt-*，本次以默认设置启动。"
+                        : "Koi 配置文件损坏，且归档失败（文件可能被占用）。\n为保护原文件已暂停自动保存，请手动查看 %APPDATA%\\Koi\\ 下的 config.xml。",
+                        "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
                 return;
             }
             cfg.IconSize = c.IconSize >= 32 ? c.IconSize : 64;
@@ -920,15 +967,21 @@ namespace Koi
             if (c.Items != null) cfg.Items = c.Items;
         }
 
-        static void ArchiveCorruptConfig()
+        // 返回 false = 归档失败（文件占用等），调用方应暂停配置保存
+        static bool ArchiveCorruptConfig()
         {
             try
             {
                 string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
                 if (File.Exists(ConfigFile)) File.Move(ConfigFile, ConfigFile + ".corrupt-" + stamp);
                 if (File.Exists(ConfigFile + ".bak")) File.Move(ConfigFile + ".bak", ConfigFile + ".bak.corrupt-" + stamp);
+                return true;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                AppendErrorLog("归档损坏配置失败：" + ex.Message);
+                return false;
+            }
         }
 
         static Config TryReadConfig(string file)
@@ -956,6 +1009,7 @@ namespace Koi
 
         void DoSave()
         {
+            if (configLoadFailed) return; // 归档失败的保护：不覆盖损坏的原配置文件
             try
             {
                 Directory.CreateDirectory(ConfigDir);
