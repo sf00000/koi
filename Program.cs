@@ -16,6 +16,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -534,7 +535,24 @@ namespace Koi
         static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
         static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        static extern bool IsIconic(IntPtr hWnd);
         const int SW_RESTORE = 9;
+
+        delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")]
+        static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+        [DllImport("user32.dll")]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int pid);
+        [DllImport("user32.dll")]
+        static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int maxCount);
+        [DllImport("user32.dll")]
+        static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
+        struct RECT { public int Left, Top, Right, Bottom; }
+
+        class WinCand { public IntPtr H; public bool Visible; public long Area; }
 
         bool TryActivateRunning(string path)
         {
@@ -544,16 +562,50 @@ namespace Koi
                 if (string.Compare(Path.GetExtension(path), ".exe", true) != 0) return false;
                 string name = Path.GetFileNameWithoutExtension(path);
                 if (string.IsNullOrEmpty(name)) return false;
+
+                HashSet<int> pids = new HashSet<int>();
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
-                    using (p)
-                    {
-                        if (p.MainWindowHandle == IntPtr.Zero) continue;
-                        ShowWindow(p.MainWindowHandle, SW_RESTORE); // 最小化则恢复
-                        SetForegroundWindow(p.MainWindowHandle);     // 前置（点击后进程有前台权）
-                        return true;
-                    }
+                    using (p) pids.Add(p.Id);
                 }
+                if (pids.Count == 0) return false;
+
+                // 枚举该进程组的顶层窗口，挑"有标题且足够大"的真界面。
+                // 不能用 Process.MainWindowHandle：Chromium 系应用常指向 52x52 的
+                // 无标题辅助窗（如豆包），聚焦它毫无效果。
+                List<WinCand> cands = new List<WinCand>();
+                EnumWindows(delegate(IntPtr h, IntPtr l)
+                {
+                    int pid;
+                    GetWindowThreadProcessId(h, out pid);
+                    if (!pids.Contains(pid)) return true;
+                    StringBuilder sb = new StringBuilder(256);
+                    GetWindowText(h, sb, 256);
+                    if (sb.Length == 0) return true;
+                    RECT r;
+                    GetWindowRect(h, out r);
+                    long area = (long)Math.Abs(r.Right - r.Left) * Math.Abs(r.Bottom - r.Top);
+                    if (area < 200L * 120) return true; // 过滤托盘图标、提示气泡等小窗
+                    WinCand c = new WinCand();
+                    c.H = h;
+                    c.Visible = IsWindowVisible(h);
+                    c.Area = area;
+                    cands.Add(c);
+                    return true;
+                }, IntPtr.Zero);
+                if (cands.Count == 0) return false;
+
+                WinCand best = null;
+                foreach (WinCand c in cands)
+                    if (c.Visible && (best == null || c.Area > best.Area)) best = c;
+                if (best == null)
+                    foreach (WinCand c in cands)
+                        if (best == null || c.Area > best.Area) best = c;
+
+                // 隐藏/最小化则恢复显示，再前置
+                if (!IsWindowVisible(best.H) || IsIconic(best.H)) ShowWindow(best.H, SW_RESTORE);
+                SetForegroundWindow(best.H);
+                return true;
             }
             catch { }
             return false;
