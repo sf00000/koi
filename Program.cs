@@ -26,6 +26,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Xml.Serialization;
 using GdiIcon = System.Drawing.Icon;
+using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
@@ -46,6 +47,9 @@ namespace Koi
         public double? Top;
         public bool Topmost = true;
         public bool AutoStart = false;
+        public bool ShowNames = true;          // 图标下方常显名称（旧配置缺省视为 true）
+        [XmlIgnore]
+        public bool ShowNamesSpecified;        // XmlSerializer 开关：旧配置无此字段时保持 false
         public List<ItemCfg> Items = new List<ItemCfg>();
     }
 
@@ -53,6 +57,8 @@ namespace Koi
     {
         public ItemCfg Cfg;
         public Image Img;
+        public TextBlock Caption;  // 图标下方常显名称
+        public StackPanel Host;    // 图标+名称 的纵向组合，鱼眼 ZIndex 作用在它上面
         public ScaleTransform Scale;
     }
 
@@ -210,7 +216,7 @@ namespace Koi
             img.RenderTransformOrigin = new Point(0.5, 1.0); // 从底部向上放大，凸出 Dock 背景
             en.Scale = new ScaleTransform(1, 1);
             img.RenderTransform = en.Scale;
-            img.Margin = new Thickness(5, 0, 5, 0);
+            img.Margin = new Thickness(0, 0, 0, 0);
             img.SetValue(RenderOptions.BitmapScalingModeProperty, BitmapScalingMode.HighQuality);
             img.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); };
             img.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
@@ -219,7 +225,26 @@ namespace Koi
             img.ContextMenu = BuildItemMenu(en);
             en.Img = img;
 
-            row.Children.Add(img);
+            // 名称常显在图标下方，超长省略号
+            TextBlock cap = new TextBlock();
+            cap.Text = c.Name;
+            cap.FontSize = 11;
+            cap.Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xD3, 0xD7, 0xDC));
+            cap.TextAlignment = TextAlignment.Center;
+            cap.TextTrimming = TextTrimming.CharacterEllipsis;
+            cap.MaxWidth = IconSizePx() + 10;
+            cap.Margin = new Thickness(0, 2, 0, 0);
+            cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
+            en.Caption = cap;
+
+            StackPanel host = new StackPanel();
+            host.Orientation = Orientation.Vertical;
+            host.Margin = new Thickness(5, 0, 5, 0);
+            host.Children.Add(img);
+            host.Children.Add(cap);
+            en.Host = host;
+
+            row.Children.Add(host);
             entries.Add(en);
             UpdateHint();
             if (save) ScheduleSave();
@@ -245,12 +270,26 @@ namespace Koi
         {
             ContextMenu m = new ContextMenu();
             m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
+            m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
             m.Items.Add(new Separator());
             m.Items.Add(Mi("图标增大（滚轮 ↑）", delegate { SetIconSize(IconSizePx() + 6); }));
             m.Items.Add(Mi("图标减小（滚轮 ↓）", delegate { SetIconSize(IconSizePx() - 6); }));
             m.Items.Add(Mi("背景更透明（Ctrl+滚轮 ↓）", delegate { SetOpacity(cfg.Opacity - 0.08); }));
             m.Items.Add(Mi("背景更不透明（Ctrl+滚轮 ↑）", delegate { SetOpacity(cfg.Opacity + 0.08); }));
             m.Items.Add(Mi("恢复默认透明度", delegate { SetOpacity(0.72); }));
+
+            MenuItem names = Mi("显示图标名称", null);
+            names.IsCheckable = true;
+            names.IsChecked = cfg.ShowNames;
+            names.Click += delegate
+            {
+                cfg.ShowNames = !cfg.ShowNames;
+                names.IsChecked = cfg.ShowNames;
+                foreach (DockEntry en in entries)
+                    en.Caption.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
+                ScheduleSave();
+            };
+            m.Items.Add(names);
             m.Items.Add(new Separator());
 
             MenuItem top = Mi("总在最前", null);
@@ -311,7 +350,7 @@ namespace Koi
                 double s = 1.0 + amp * Math.Exp(-(d * d) / (2.0 * sigma * sigma));
                 en.Scale.ScaleX = s;
                 en.Scale.ScaleY = s;
-                Panel.SetZIndex(en.Img, s > 1.2 ? 10 : 0); // 放大的图标盖在邻居上面，同 Mac
+                Panel.SetZIndex(en.Host, s > 1.2 ? 10 : 0); // 放大的图标盖在邻居上面，同 Mac
                 if (en == hoveredEntry) PositionNameLabel(en);
             }
         }
@@ -343,7 +382,7 @@ namespace Koi
             {
                 en.Scale.ScaleX = 1.0;
                 en.Scale.ScaleY = 1.0;
-                Panel.SetZIndex(en.Img, 0);
+                Panel.SetZIndex(en.Host, 0);
             }
         }
 
@@ -365,6 +404,7 @@ namespace Koi
             {
                 en.Img.Width = v;
                 en.Img.Height = v;
+                if (en.Caption != null) en.Caption.MaxWidth = v + 10;
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
             ScheduleSave();
@@ -444,6 +484,7 @@ namespace Koi
             {
                 en.Cfg.Name = s.Trim();
                 if (hoveredEntry == en) ((TextBlock)nameLabel.Child).Text = en.Cfg.Name;
+                if (en.Caption != null) en.Caption.Text = en.Cfg.Name;
                 ScheduleSave();
             }
         }
@@ -475,6 +516,20 @@ namespace Koi
                     c.Name = PrettyName(f);
                     AddEntry(c, true);
                 }
+            }
+        }
+
+        void BrowseAddFolder()
+        {
+            WinForms.FolderBrowserDialog dlg = new WinForms.FolderBrowserDialog();
+            dlg.Description = "选择要加入 Dock 的文件夹";
+            dlg.ShowNewFolderButton = false;
+            if (dlg.ShowDialog() == WinForms.DialogResult.OK)
+            {
+                ItemCfg c = new ItemCfg();
+                c.Path = dlg.SelectedPath;
+                c.Name = PrettyName(c.Path);
+                AddEntry(c, true);
             }
         }
 
@@ -544,6 +599,7 @@ namespace Koi
                     if (cfg.IconSize > 112) cfg.IconSize = 112;
                     cfg.Opacity = c.Opacity >= 0.25 ? c.Opacity : 0.72; // 旧配置无此字段(=0)时用默认
                     if (cfg.Opacity > 1.0) cfg.Opacity = 1.0;
+                    cfg.ShowNames = c.ShowNamesSpecified ? c.ShowNames : true; // 旧配置无此字段时默认显示
                     cfg.Left = c.Left;
                     cfg.Top = c.Top;
                     cfg.Topmost = c.Topmost;
@@ -573,6 +629,7 @@ namespace Koi
                 Directory.CreateDirectory(ConfigDir);
                 cfg.Left = Left;
                 cfg.Top = Top;
+                cfg.ShowNamesSpecified = true; // 确保该字段总是写入
                 using (FileStream fs = File.Create(ConfigFile))
                 {
                     XmlSerializer x = new XmlSerializer(typeof(Config));

@@ -21,6 +21,7 @@ cd /d "%CSCDIR%"
 
 csc -nologo -target:winexe -out:"%~dp0Koi.exe" ^
   -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
+  -r:System.Windows.Forms.dll ^
   -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
   -r:"%WINDIR%\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll" ^
   "%~dp0Program.cs"

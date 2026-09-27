@@ -19,7 +19,8 @@
 - **悬浮 Dock 栏**：深色半透明圆角背景 + 投影，默认停在屏幕底部（任务栏正上方），可整体拖到任意位置
 - **Mac 式鱼眼放大**：鼠标划过时图标放大并凸出到 Dock 上方，相邻图标按距离联动
 - **悬停名称标签**：图标上方浮出深色名称胶囊，跟随鱼眼位置（文件夹、程序都显示）
-- **文件夹快捷入口**：常用文件夹拖进 Dock，点击直达，省去层层开窗口
+- **图标名称常显**：每个图标下方显示名称（超长省略号），一眼区分；右键「显示图标名称」可开关
+- **文件夹快捷入口**：常用文件夹拖进 Dock 或右键「添加文件夹…」，点击直达，省去层层开窗口
 - **滚轮调图标大小**：32–112px 无级缩放
 - **Ctrl+滚轮调背景透明度**：25%–100%，让 Dock 融进壁纸（右键菜单也有「背景透明度」入口）
 - **拖拽即添加**：`.exe` / 快捷方式 / 文件夹 / 文档，拖上去松手就完成
@@ -56,7 +57,7 @@
 | **Ctrl + 滚轮** | 调节 Dock 背景透明度（25%–100%，调到最低即近乎隐形的玻璃感） |
 | **按住 Dock 空白处拖动** | 把 Dock 移到屏幕任意位置 |
 | 右键某个图标 | 打开 / 打开文件位置 / 重命名 / **从 Dock 移除** |
-| 右键 Dock 空白处 | 添加程序 / 图标增大减小 / 背景透明度 / 总在最前 / **开机自启动** / 退出 |
+| 右键 Dock 空白处 | 添加程序 / **添加文件夹** / 图标增大减小 / 背景透明度 / **显示图标名称** / 总在最前 / **开机自启动** / 退出 |
 
 ### 推荐的初始化顺序
 
@@ -144,6 +145,7 @@ cd /d C:\Windows\Microsoft.NET\Framework64\v4.0.30319
 
 csc -nologo -target:winexe -out:G:\workbuddy\Koi\Koi.exe ^
   -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
+  -r:System.Windows.Forms.dll ^
   -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
   -r:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll ^
   G:\workbuddy\Koi\Program.cs
