@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.0.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
 
 namespace Koi
 {
@@ -69,7 +69,7 @@ namespace Koi
 
     public class DockWindow : Window
     {
-        internal const string AppVersion = "1.0.2"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.1.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -336,7 +336,8 @@ namespace Koi
             row.Children.Add(host);
             entries.Add(en);
             UpdateHint();
-            if (save) ScheduleSave(); // 屏幕约束统一由 SizeChanged 处理（此时布局尚未刷新）
+            UpdateAutoSpacing(); // 新增后间距重排（布局未刷新时函数内部会跳过，由 SizeChanged 兜底）
+            if (save) ScheduleSave();
         }
 
         void UpdateHint()
@@ -650,6 +651,37 @@ namespace Koi
 
         bool fitting; // 防止 SizeChanged → 缩图标 → SizeChanged 递归
 
+        // 自动调整项目间距：未占满可用宽度时均匀铺开（有上限防过分稀疏），
+        // 放不下时收紧到最小间距并启用横向滚动。名称可读性始终优先。
+        void UpdateAutoSpacing()
+        {
+            try
+            {
+                int n = entries.Count;
+                if (n == 0 || dragStarted) return;
+                double hostW = 0;
+                foreach (DockEntry en in entries)
+                    hostW = Math.Max(hostW, en.Host.ActualWidth);
+                if (hostW <= 0) return; // 尚未布局，等 SizeChanged 再来
+                double avail = MaxDockWidth() - (PlusWidth() + 10) - 12 - 24; // 扣除＋按钮区/边距/安全余量
+                double mMin = 4;
+                double mMax = Math.Max(12, Math.Round(IconSizePx() * 0.6));
+                double m = (avail - n * hostW) / (2 * n);
+                m = Math.Max(mMin, Math.Min(mMax, Math.Round(m)));
+                if (Math.Abs(entries[0].Host.Margin.Left - m) < 0.5) return; // 无变化不折腾
+                fitting = true;
+                try
+                {
+                    foreach (DockEntry en in entries)
+                        en.Host.Margin = new Thickness(m, 0, m, 0);
+                    UpdateLayout();
+                }
+                finally { fitting = false; }
+                ClampToScreen();
+            }
+            catch { }
+        }
+
         string lastScreenKey;
 
         // 所在显示器变化（拖动跨屏、改分辨率）时重算宽度上限并重新约束
@@ -679,6 +711,7 @@ namespace Koi
             try
             {
                 MaxWidth = MaxDockWidth();
+                UpdateAutoSpacing(); // 宽度上限/所在屏幕变化时间距跟着重排
                 ClampToScreen();
             }
             finally { fitting = false; }
@@ -701,18 +734,18 @@ namespace Koi
         {
             cfg.IconSize = v;
             if (plusText != null) plusText.FontSize = Math.Max(16, Math.Round(v * 0.30));
-            double m = Math.Round(v * 0.18); // 间距随图标尺寸自动调整
             foreach (DockEntry en in entries)
             {
                 en.Img.Width = v;
                 en.Img.Height = v;
-                en.Host.Margin = new Thickness(m, 0, m, 0);
+                en.Host.Margin = new Thickness(Math.Round(v * 0.18), 0, Math.Round(v * 0.18), 0); // 基准间距，随后 UpdateAutoSpacing 微调
                 if (en.Caption != null) en.Caption.MaxWidth = Math.Max(v + 10, 76);
             }
             root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
             root.RowDefinitions[1].Height = new GridLength(v + 44, GridUnitType.Pixel); // 图标+两行名称
             if (scrollInner != null) scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(v * 0.8), 12, 10);
             UpdateLayout();
+            UpdateAutoSpacing(); // 图标尺寸变化后间距重排
         }
 
         double PlusWidth()
@@ -901,6 +934,7 @@ namespace Koi
             row.Children.Remove(en.Host); // Host = 图标+名称组合（此前误删旧的单图标元素导致移除不生效）
             entries.Remove(en);
             UpdateHint();
+            UpdateAutoSpacing(); // 移除后剩余项目自动铺开
             ScheduleSave();
         }
 
