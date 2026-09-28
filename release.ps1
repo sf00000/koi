@@ -1,4 +1,4 @@
-# Koi 一键发版脚本
+﻿# Koi 一键发版脚本
 # 用法:
 #   powershell -File release.ps1            # 递增补丁位 1.0.0 -> 1.0.1
 #   powershell -File release.ps1 minor      # 递增次位   1.0.0 -> 1.1.0 (新功能)
@@ -7,7 +7,8 @@
 param([string]$Bump = "patch")
 $ErrorActionPreference = 'Stop'
 
-$repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repo = Split-Path -Parent $PSCommandPath
+if (-not $repo) { $repo = 'G:\workbuddy\Koi' } # 兜底：极少数宿主取不到脚本路径
 Set-Location $repo
 
 # 1) 读取并递增版本号
@@ -24,14 +25,15 @@ switch ($Bump) {
 $new = "$major.$minor.$patch"
 Write-Host "版本: $cur -> $new"
 
-# 2) 同步版本号到 VERSION 与 Program.cs
+# 2) 同步版本号到 VERSION 与 Program.cs（显式 UTF-8 读写，防止中文注释被 ANSI 误读损坏）
 Set-Content "$repo\VERSION" "$new`n" -Encoding ASCII
 $cs = "$repo\Program.cs"
-$src = Get-Content $cs -Raw
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$src = [IO.File]::ReadAllText($cs, $utf8)
 $src = $src -replace 'AppVersion = "[0-9.]+"', "AppVersion = `"$new`""
 $src = $src -replace 'AssemblyVersion\("[0-9.]+"\)', "AssemblyVersion(`"$new.0`")"
 $src = $src -replace 'AssemblyFileVersion\("[0-9.]+"\)', "AssemblyFileVersion(`"$new.0`")"
-Set-Content $cs $src -Encoding UTF8
+[IO.File]::WriteAllText($cs, $src, $utf8)
 
 # 3) 编译（停止运行中的 Koi 释放 exe）
 try { Stop-Process -Name Koi -Force -ErrorAction Stop; Start-Sleep 1 } catch {}

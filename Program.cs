@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.2.0")]
 
 namespace Koi
 {
@@ -69,7 +69,7 @@ namespace Koi
 
     public class DockWindow : Window
     {
-        internal const string AppVersion = "1.0.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.0.2"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -536,7 +536,7 @@ namespace Koi
             if (dragStarted) return; // 拖动中不叠加鱼眼效果
             double mx = e.GetPosition(row).X;
             double sigma = IconSizePx() * 1.35;
-            const double amp = 0.55;
+            const double amp = 0.9; // 悬停放大幅度：中心图标 1.9x，更明显
             foreach (DockEntry en in entries)
             {
                 if (en.Img.ActualWidth <= 0) continue;
