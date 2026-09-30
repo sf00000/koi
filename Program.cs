@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
 
 namespace Koi
 {
@@ -69,7 +69,11 @@ namespace Koi
 
     public class DockWindow : Window
     {
-        internal const string AppVersion = "1.2.0"; // 发布时由 release.ps1 自动递增
+        // 鱼眼放大幅度：中心图标缩放为 1+FisheyeAmp 倍。
+        // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
+        internal const double FisheyeAmp = 0.9;
+
+        internal const string AppVersion = "1.2.1"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -152,7 +156,7 @@ namespace Koi
             root.Margin = new Thickness(18, 6, 18, 12);
 
             RowDefinition overflow = new RowDefinition();
-            overflow.Height = new GridLength(IconSizePx() * 0.8, GridUnitType.Pixel); // 图标放大时向上凸出的空间
+            overflow.Height = new GridLength(FisheyeAmp * IconSizePx() + 6, GridUnitType.Pixel); // 图标放大时向上凸出的空间（与 FisheyeAmp 同参）
             RowDefinition body = new RowDefinition();
             body.Height = new GridLength(IconSizePx() + 44, GridUnitType.Pixel); // 图标+两行名称
 
@@ -205,10 +209,12 @@ namespace Koi
             // 图标行放进横向滚动容器：图标缩到 32px 仍放不下时可横向滚动访问。
             // 放大所需的顶部留白放在滚动内容内部（scrollInner 上边距=0.8×图标），鱼眼放大部分不会被视口裁掉
             scrollInner = new Grid();
-            scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(IconSizePx() * 0.8), 12, 10); // 左让位＋按钮，上=放大留白，右留余量，下留名称空间
+            scrollInner.Margin = new Thickness(0, Math.Round(FisheyeAmp * IconSizePx() + 6), 12, 10); // 上=放大留白（随 FisheyeAmp），右留余量，下留名称空间
             scrollInner.Children.Add(row);
 
+            // 滚动视口本身让开＋按钮的宽度：内容滚动时图标不会滑到＋按钮底下被遮挡
             scroller = new ScrollViewer();
+            scroller.Margin = new Thickness(PlusWidth() + 10, 0, 0, 0);
             scroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden;
             scroller.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
             scroller.Content = scrollInner;
@@ -321,7 +327,9 @@ namespace Koi
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
             cap.MouseLeftButtonUp += delegate { Launch(c); };
             cap.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
-            cap.Tag = "cap"; // OnBgLeftDown 用它区分"点在名称上"
+            cap.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); }; // 悬停名称同样弹出全名胶囊
+            cap.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
+            cap.Tag = "cap"; // OnWindowPreviewDown 用它区分"点在名称上"
             cap.ContextMenu = BuildItemMenu(en); // 名称右键 = 图标右键，统一操作
             en.Caption = cap;
 
@@ -351,7 +359,13 @@ namespace Koi
             m.Items.Add(Mi("打开", delegate { Launch(en.Cfg); }));
             m.Items.Add(Mi("打开文件位置", delegate { OpenLocation(en.Cfg); }));
             m.Items.Add(new Separator());
-            m.Items.Add(Mi("强制结束进程（卡死时用）", delegate { KillApp(en.Cfg); }));
+            MenuItem kill = Mi("强制结束进程（卡死时用）", delegate { KillApp(en.Cfg); });
+            string ext = null;
+            try { ext = Path.GetExtension(en.Cfg.Path); } catch { }
+            kill.IsEnabled = ext != null &&
+                (ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
+                 ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase)); // 仅 exe/lnk 支持进程匹配
+            m.Items.Add(kill);
             m.Items.Add(new Separator());
             m.Items.Add(Mi("重命名…", delegate { Rename(en); }));
             m.Items.Add(Mi("从 Dock 移除", delegate { Remove(en); }));
@@ -539,7 +553,7 @@ namespace Koi
             if (dragStarted) return; // 拖动中不叠加鱼眼效果
             double mx = e.GetPosition(row).X;
             double sigma = IconSizePx() * 1.35;
-            const double amp = 0.9; // 悬停放大幅度：中心图标 1.9x，更明显
+            const double amp = FisheyeAmp; // 与顶部留白同参
             foreach (DockEntry en in entries)
             {
                 if (en.Img.ActualWidth <= 0) continue;
@@ -743,9 +757,10 @@ namespace Koi
                 en.Host.Margin = new Thickness(Math.Round(v * 0.18), 0, Math.Round(v * 0.18), 0); // 基准间距，随后 UpdateAutoSpacing 微调
                 if (en.Caption != null) en.Caption.MaxWidth = Math.Max(v + 10, 76);
             }
-            root.RowDefinitions[0].Height = new GridLength(v * 0.8, GridUnitType.Pixel);
+            root.RowDefinitions[0].Height = new GridLength(FisheyeAmp * v + 6, GridUnitType.Pixel);
             root.RowDefinitions[1].Height = new GridLength(v + 44, GridUnitType.Pixel); // 图标+两行名称
-            if (scrollInner != null) scrollInner.Margin = new Thickness(PlusWidth() + 10, Math.Round(v * 0.8), 12, 10);
+            if (scrollInner != null) scrollInner.Margin = new Thickness(0, Math.Round(FisheyeAmp * v + 6), 12, 10);
+            if (scroller != null) scroller.Margin = new Thickness(PlusWidth() + 10, 0, 0, 0);
             UpdateLayout();
             UpdateAutoSpacing(); // 图标尺寸变化后间距重排
         }
@@ -816,21 +831,50 @@ namespace Koi
             "doubao",
         };
 
+        // 解析 .lnk 快捷方式的真实目标 exe（WScript.Shell COM 反射调用，免额外引用）
+        static string ResolveLnkTarget(string lnkPath)
+        {
+            try
+            {
+                Type t = Type.GetTypeFromProgID("WScript.Shell");
+                if (t == null) return null;
+                object shell = Activator.CreateInstance(t);
+                object lnk = t.InvokeMember("CreateShortcut",
+                    System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnkPath });
+                if (lnk == null) return null;
+                return t.InvokeMember("TargetPath",
+                    System.Reflection.BindingFlags.GetProperty, null, lnk, null) as string;
+            }
+            catch { return null; }
+        }
+
         // 收集某配置路径对应应用的全部进程 Id：
-        // 精确匹配进程 exe 与配置路径；已知"启动器外壳 + 子目录真身"布局的应用
+        // .exe 精确匹配进程 exe 与配置路径；.lnk 先解析目标再按上述规则匹配；
+        // 已知"启动器外壳 + 子目录真身"布局的应用
         // （见 LauncherApps，如豆包）额外匹配配置 exe 所在目录内的进程。
         HashSet<int> FindAppProcessIds(string path)
         {
             HashSet<int> pids = new HashSet<int>();
             try
             {
-                string name = Path.GetFileNameWithoutExtension(path);
+                if (string.IsNullOrEmpty(path)) return pids;
+                string ext = Path.GetExtension(path);
+                bool isExe = string.Compare(ext, ".exe", true) == 0;
+                bool isLnk = string.Compare(ext, ".lnk", true) == 0;
+                if (!isExe && !isLnk) return pids; // Store 应用/文件夹等不支持进程级匹配
+                string target = path;
+                if (isLnk)
+                {
+                    target = ResolveLnkTarget(path);
+                    if (string.IsNullOrEmpty(target)) return pids; // 解析不出目标：视为无匹配
+                }
+                string name = Path.GetFileNameWithoutExtension(target);
                 if (string.IsNullOrEmpty(name)) return pids;
                 string baseDir = null;
                 bool allowDirTree = LauncherApps.Contains(name);
                 if (allowDirTree)
                 {
-                    try { baseDir = Path.GetDirectoryName(path.Trim()); } catch { }
+                    try { baseDir = Path.GetDirectoryName(target.Trim()); } catch { }
                 }
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
@@ -841,7 +885,7 @@ namespace Koi
                             string exe = p.MainModule != null ? p.MainModule.FileName : null;
                             if (exe == null) continue;
                             exe = exe.Trim();
-                            if (string.Compare(exe, path.Trim(), true) == 0) { pids.Add(p.Id); continue; }
+                            if (string.Compare(exe, target.Trim(), true) == 0) { pids.Add(p.Id); continue; }
                             if (!allowDirTree || baseDir == null) continue;
                             string dir = Path.GetDirectoryName(exe);
                             if (dir == null) continue;
@@ -917,6 +961,7 @@ namespace Koi
 
         // 强制结束应用的全部进程（程序卡死时用）：
         // 先 CloseMainWindow 优雅关闭给 2 秒保存机会，仍未退出的再 Kill。
+        // 等待/强杀在后台线程执行，Dock 界面全程不卡；结果回 UI 线程提示。
         void KillApp(ItemCfg c)
         {
             MessageBoxResult r = MessageBox.Show(this,
@@ -924,10 +969,19 @@ namespace Koi
                 "Koi", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
             if (r != MessageBoxResult.OK) return;
 
+            ThreadPool.QueueUserWorkItem(delegate { DoKillApp(c); });
+        }
+
+        void DoKillApp(ItemCfg c)
+        {
+            string name = c.Name;
             HashSet<int> pids = FindAppProcessIds(c.Path);
             if (pids.Count == 0)
             {
-                MessageBox.Show(this, "「" + c.Name + "」当前没有正在运行的进程。", "Koi");
+                Dispatcher.BeginInvoke(new Action(delegate
+                {
+                    MessageBox.Show(this, "「" + name + "」当前没有正在运行的进程。", "Koi");
+                }));
                 return;
             }
             int total = pids.Count;
@@ -966,12 +1020,15 @@ namespace Koi
             }
             foreach (Process p in alive) try { p.Dispose(); } catch { }
 
-            if (alive.Count == 0)
-                MessageBox.Show(this, "已结束「" + c.Name + "」的 " + total + " 个进程。", "Koi");
-            else
-                MessageBox.Show(this,
-                    "「" + c.Name + "」仍有 " + alive.Count + " 个进程未能结束（可能需要管理员权限）。",
-                    "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
+            string msg = alive.Count == 0
+                ? "已结束「" + name + "」的 " + total + " 个进程。"
+                : "「" + name + "」仍有 " + alive.Count + " 个进程未能结束（可能需要管理员权限）。";
+            bool warn = alive.Count > 0;
+            Dispatcher.BeginInvoke(new Action(delegate
+            {
+                MessageBox.Show(this, msg, "Koi", MessageBoxButton.OK,
+                    warn ? MessageBoxImage.Warning : MessageBoxImage.Information);
+            }));
         }
 
         void Rename(DockEntry en)
@@ -1043,6 +1100,12 @@ namespace Koi
         {
             try
             {
+                // 文件夹名称不能去掉"扩展名"：项目.v1、项目.v2 是两个不同文件夹
+                if (Directory.Exists(path))
+                {
+                    string d = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    return string.IsNullOrEmpty(d) ? path : d;
+                }
                 string n = Path.GetFileNameWithoutExtension(path);
                 if (string.IsNullOrEmpty(n)) n = Path.GetFileName(path);
                 if (string.IsNullOrEmpty(n)) n = path;

@@ -50,12 +50,17 @@ Write-Host "编译完成: Koi.exe"
 # 4) 提交 + 打 tag + 推送
 git add -A
 git commit --no-gpg-sign -m "release v$new" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "git commit 失败，发版中止" }
 git tag "v$new"
+if ($LASTEXITCODE -ne 0) { throw "git tag 失败（tag 可能已存在），发版中止" }
 git push
+if ($LASTEXITCODE -ne 0) { throw "git push 失败，发版中止（本地 commit/tag 已保留，网络恢复后手动 git push && git push origin v$new）" }
 git push origin "v$new"
+if ($LASTEXITCODE -ne 0) { throw "推送 tag 失败，发版中止" }
 
 # 5) 创建 GitHub Release 并附上 exe
 gh release create "v$new" "$repo\Koi.exe" --title "v$new" --generate-notes
+if ($LASTEXITCODE -ne 0) { throw "GitHub Release 创建失败（tag 已推送，可手动到 Releases 页面补建）" }
 
 Write-Host "Release v$new 发布完成，启动 Koi..."
 Start-Process "$repo\Koi.exe"
