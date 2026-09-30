@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.7.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.7.0.0")]
 
 namespace Koi
 {
@@ -77,7 +77,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.6.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.7.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -428,6 +428,11 @@ namespace Koi
 
         DockEntry dropMergeTarget; // 拖动悬停时可能合并到的目标文件
         System.Windows.Controls.Primitives.Popup stackPopup; // 文件堆的悬停选择列表
+        DockEntry pullFromEntry;   // 正在从堆里往外拖的所属堆
+        string pullPath;           // 正在拖出的文件路径
+        Point pullStart;
+        Point pullLast;            // 拖出过程中的最后光标位置（窗口坐标）
+        bool pullActive;           // 已进入拖出状态
 
         // 只有"普通文件"可堆叠：排除目录、exe/lnk/url/bat/cmd（应用类）、Store 应用
         static bool ComputeStackable(string path)
@@ -555,10 +560,36 @@ namespace Koi
                 rowB.Child = g;
                 rowB.MouseEnter += delegate { rowB.Background = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)); };
                 rowB.MouseLeave += delegate { rowB.Background = Brushes.Transparent; };
-                rowB.MouseLeftButtonUp += delegate
+                // 按住行往外拖 = 把该文件从堆里取出（捕获鼠标保证拖出弹窗后仍能收尾）
+                rowB.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs me)
                 {
-                    if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
-                    Launch(new ItemCfg { Path = p });
+                    if (me.ChangedButton != MouseButton.Left) return;
+                    rowB.CaptureMouse();
+                    pullFromEntry = en;
+                    pullPath = p;
+                    pullStart = me.GetPosition(null);
+                    pullLast = pullStart;
+                    pullActive = false;
+                };
+                rowB.MouseMove += delegate(object s, MouseEventArgs me)
+                {
+                    if (pullPath == null || pullFromEntry != en || me.LeftButton != MouseButtonState.Pressed) return;
+                    Point sp = me.GetPosition(null);
+                    pullLast = sp;
+                    if (!pullActive && (Math.Abs(sp.X - pullStart.X) > 8 || Math.Abs(sp.Y - pullStart.Y) > 8))
+                        pullActive = true; // 超过阈值：进入拖出状态（原地点击仍是打开）
+                };
+                rowB.MouseLeftButtonUp += delegate(object s, MouseButtonEventArgs me)
+                {
+                    bool wasPull = pullActive && pullPath != null && pullFromEntry == en;
+                    Point winPt = me.GetPosition(null);
+                    FinishPull(en, p, winPt, wasPull);
+                };
+                // 弹窗关闭会强制释放捕获：此时用最后跟踪位置兜底完成拖出
+                rowB.LostMouseCapture += delegate
+                {
+                    if (pullActive && pullPath != null && pullFromEntry == en)
+                        FinishPull(pullFromEntry, pullPath, pullLast, true);
                 };
                 listPanel.Children.Add(rowB);
             }
@@ -1564,6 +1595,87 @@ namespace Koi
             {
                 MessageBox.Show(this, msg, "Koi", MessageBoxButton.OK, icon);
             }));
+        }
+
+        // 拖出收尾：关弹窗、清状态；wasPull=true 时把文件从堆中取出并落在光标附近的槽位，
+        // 否则视为原地点击（打开该文件）
+        void FinishPull(DockEntry from, string path, Point winPt, bool wasPull)
+        {
+            if (stackPopup != null) { stackPopup.IsOpen = false; }
+            stackPopup = null;
+            pullFromEntry = null;
+            pullPath = null;
+            pullActive = false;
+            if (wasPull && from != null && !string.IsNullOrEmpty(path))
+            {
+                try
+                {
+                    Point sp = PointToScreen(winPt); // 窗口坐标 → 屏幕像素
+                    PullOutFileFromStack(from, path, sp.X);
+                }
+                catch { }
+            }
+            else if (!string.IsNullOrEmpty(path))
+            {
+                Launch(new ItemCfg { Path = path });
+            }
+        }
+
+        // 把文件从堆中取出，作为独立条目插入屏幕坐标对应的槽位；堆按剩余数量自动退化
+        void PullOutFileFromStack(DockEntry en, string path, double screenPx)
+        {
+            List<string> st = en.Cfg.Stack;
+            if (st == null || !st.Contains(path)) return;
+            st.Remove(path);
+            int insertAt = InsertIndexAtScreenX(screenPx);
+
+            if (st.Count == 0)
+            {
+                // 堆空了：原条目直接变成被拖出的这个文件
+                en.Cfg.Path = path;
+                en.Cfg.Stack = null;
+                en.Cfg.Name = PrettyName(path);
+                en.Caption.Text = en.Cfg.Name;
+                en.Img.Source = ShellIcons.ResolveIcon(en.Cfg) ?? ShellIcons.DefaultIcon();
+                UpdateStackVisual(en);
+                ScheduleSave();
+                return;
+            }
+            if (st.Count == 1)
+            {
+                // 只剩一个：堆退化为普通文件
+                en.Cfg.Stack = null;
+                en.Cfg.Path = st[0];
+            }
+            else if (!st.Contains(en.Cfg.Path))
+            {
+                en.Cfg.Path = st[0]; // 代表图标始终 = 列表首位
+            }
+            en.Cfg.Name = PrettyName(en.Cfg.Path);
+            en.Caption.Text = en.Cfg.Name;
+            en.Img.Source = ShellIcons.ResolveIcon(en.Cfg) ?? ShellIcons.DefaultIcon();
+            UpdateStackVisual(en);
+
+            ItemCfg c = new ItemCfg { Path = path, Name = PrettyName(path) };
+            AddEntry(c, true, insertAt);
+            UpdateAutoSpacing();
+            ScheduleSave();
+        }
+
+        // 屏幕像素 X → Dock 中最近的插入槽位下标
+        int InsertIndexAtScreenX(double screenPx)
+        {
+            try
+            {
+                Point rp = row.PointFromScreen(new Point(screenPx, 0));
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    double c = entries[i].Host.TranslatePoint(new Point(entries[i].Host.ActualWidth / 2.0, 0), row).X;
+                    if (rp.X < c) return i;
+                }
+                return entries.Count;
+            }
+            catch { return entries.Count; }
         }
 
         void Rename(DockEntry en)
