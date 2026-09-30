@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.2.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.3.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.2.2"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.2.3"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -979,7 +979,7 @@ namespace Koi
             string name = c.Name;
             List<Process> created = new List<Process>(); // 所有打开的进程对象，finally 统一释放
             string failReason = null;
-            int total = 0, killed = 0, uncertain = 0;
+            int total = 0, uncertain = 0;
             try
             {
                 HashSet<int> pids = FindAppProcessIds(c.Path);
@@ -996,13 +996,21 @@ namespace Koi
                 List<Process> alive = new List<Process>();
                 foreach (int id in pids)
                 {
+                    Process p = null;
                     try
                     {
-                        Process p = Process.GetProcessById(id);
-                        if (p != null && !p.HasExited) { alive.Add(p); created.Add(p); }
-                        else if (p != null) { created.Add(p); }
+                        p = Process.GetProcessById(id);
+                        created.Add(p);           // 对象一旦创建就必须纳入统一释放
+                        if (p.HasExited) continue; // 已不存在：确认跳过
+                        alive.Add(p);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        // 拿不到进程或检查失败（权限等）：不确定状态，不能计入成功
+                        if (p == null && ex is ArgumentException) continue; // 系统里已无此进程，确认跳过
+                        uncertain++;
+                        if (failReason == null) failReason = ex.Message;
+                    }
                 }
 
                 // 第一阶段：优雅关闭
@@ -1038,7 +1046,7 @@ namespace Koi
                     if (alive.Count == 0) break;
                     Thread.Sleep(100);
                 }
-                uncertain = alive.Count;
+                uncertain += alive.Count; // 初始化阶段的不确定数 + 强杀后仍未确认的，合并统计
             }
             catch (Exception ex)
             {
