@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.1.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.1"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -279,8 +279,25 @@ namespace Koi
             Content = root;
 
             PreviewMouseLeftButtonDown += OnWindowPreviewDown; // 窗口级判定：按在空白处=拖动窗口
-            bg.ContextMenu = BuildBgMenu();
-            scroller.ContextMenu = BuildBgMenu(); // 空隙/滚动区右键同样弹全局菜单
+            // 右键打开时按当前数据重建全局菜单（最近/分组/工作组合是动态内容）
+            bg.ContextMenuOpening += delegate(object s, ContextMenuEventArgs ce)
+            {
+                ContextMenu mm = BuildBgMenu();
+                mm.PlacementTarget = bg;
+                mm.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+                bg.ContextMenu = mm;
+                mm.IsOpen = true;
+                ce.Handled = true;
+            };
+            scroller.ContextMenuOpening += delegate(object s, ContextMenuEventArgs ce)
+            {
+                ContextMenu mm = BuildBgMenu();
+                mm.PlacementTarget = scroller;
+                mm.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+                scroller.ContextMenu = mm;
+                mm.IsOpen = true;
+                ce.Handled = true;
+            };
 
             AllowDrop = true;
             DragEnter += OnDragEnter;
@@ -298,6 +315,8 @@ namespace Koi
             DockEntry en = new DockEntry();
             en.Cfg = c;
             en.Stackable = ComputeStackable(c.Path);
+            // 分组视图内添加：默认归入当前组，保证"看得见"与"归属"一致
+            if (cfg.CurrentGroup != "全部" && string.IsNullOrEmpty(c.Group)) c.Group = cfg.CurrentGroup;
 
             Image img = new Image();
             img.Source = ShellIcons.ResolveIcon(c);
@@ -356,7 +375,13 @@ namespace Koi
                 if (!wasDrag) { if (IsStack(en)) ShowStackPopup(en); else Launch(c); }
             };
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
-            img.ContextMenu = BuildItemMenu(en);
+            // 右键打开时重建条目菜单（移动到分组列表是动态内容）
+            img.ContextMenuOpening += delegate
+            {
+                ContextMenu mm = BuildItemMenu(en);
+                mm.PlacementTarget = img;
+                img.ContextMenu = mm;
+            };
             en.Img = img;
 
             // 堆叠视觉：图标下垫两张微旋转的"纸片"，仅文件堆显示
@@ -417,7 +442,7 @@ namespace Koi
             }; // 悬停名称同样弹出全名胶囊
             cap.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
             cap.Tag = "cap"; // OnWindowPreviewDown 用它区分"点在名称上"
-            cap.ContextMenu = BuildItemMenu(en); // 名称右键 = 图标右键，统一操作
+            cap.ContextMenuOpening += delegate { cap.ContextMenu = BuildItemMenu(en); }; // 名称右键 = 图标右键，统一操作（打开时重建）
             en.Caption = cap;
 
             StackPanel host = new StackPanel();
@@ -427,6 +452,8 @@ namespace Koi
             host.Children.Add(imgWrap);
             host.Children.Add(cap);
             en.Host = host;
+            host.Visibility = (cfg.CurrentGroup == "全部" || c.Group == cfg.CurrentGroup)
+                ? Visibility.Visible : Visibility.Collapsed; // 与分组过滤保持一致
 
             if (index >= 0 && index <= entries.Count)
             {
@@ -824,7 +851,7 @@ namespace Koi
 
             // 移动到分组：控制该条目在哪个分组视图显示
             MenuItem grp = new MenuItem { Header = "移动到分组" };
-            MenuItem gAll = Mi("未分组（所有视图显示）", delegate
+            MenuItem gAll = Mi("未分组（仅“全部”视图显示）", delegate
             {
                 en.Cfg.Group = null;
                 ApplyGroupVisibility();
@@ -1080,18 +1107,30 @@ namespace Koi
                 if (xIn < 30) scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset - 10);
                 else if (xIn > scroller.ViewportWidth - 30) scroller.ScrollToHorizontalOffset(scroller.HorizontalOffset + 10);
             }
-            // 光标越过一个槽位宽度即换位（槽距含左右 Margin）
-            int cur = entries.IndexOf(src);
+            // 光标越过一个可见槽位宽度即换位：分组视图下只对可见项排序，
+            // 再映射回完整列表插入位置，其他分组的相对顺序原样保留
+            List<DockEntry> vis = new List<DockEntry>();
+            foreach (DockEntry en2 in entries)
+                if (en2.Host.Visibility == Visibility.Visible) vis.Add(en2);
+            int vi = vis.IndexOf(src);
+            if (vi < 0) return;
             double pitch = Math.Max(1, src.Host.ActualWidth + src.Host.Margin.Left + src.Host.Margin.Right);
-            int target = cur + (int)Math.Round((p.X - cx) / pitch);
-            if (target < 0) target = 0;
-            if (target > entries.Count - 1) target = entries.Count - 1;
-            if (target != cur)
+            int vt = vi + (int)Math.Round((p.X - cx) / pitch);
+            if (vt < 0) vt = 0;
+            if (vt > vis.Count - 1) vt = vis.Count - 1;
+            if (vt != vi)
             {
-                entries.RemoveAt(cur);
-                entries.Insert(target, src);
+                // 从可见序列移除自身后，vt 即目标槽位上的锚点可见项
+                vis.RemoveAt(vi);
+                if (vt > vi) vt--;
+                DockEntry anchor = vt < vis.Count ? vis[vt] : null;
+
+                entries.Remove(src);
                 row.Children.Remove(src.Host);
-                row.Children.Insert(target, src.Host);
+                int fi = anchor != null ? entries.IndexOf(anchor) : entries.Count;
+                entries.Insert(fi, src);
+                int ri = anchor != null ? row.Children.IndexOf(anchor.Host) : row.Children.Count;
+                row.Children.Insert(ri, src.Host);
                 // Insert 只改布局树，坐标要等布局刷新才是新槽位的——强制同步刷新
                 row.UpdateLayout();
                 // 重新落基准并贴回光标，消除"新槽位＋旧位移"的跳位
@@ -2372,6 +2411,21 @@ namespace Koi
             cfg.Topmost = c.Topmost;
             cfg.AutoStart = c.AutoStart;
             if (c.Items != null) cfg.Items = c.Items;
+
+            // 恢复动态内容：最近访问 / 工作组合 / 当前分组（缺了会被下次保存覆盖丢失）
+            cfg.Recent = c.Recent != null ? c.Recent : new List<string>();
+            cfg.Workflows = c.Workflows != null ? c.Workflows : new List<WorkflowCfg>();
+            cfg.CurrentGroup = string.IsNullOrEmpty(c.CurrentGroup) ? "全部" : c.CurrentGroup;
+            // 校验当前分组仍存在（有归属条目），失效则回落"全部"
+            if (cfg.CurrentGroup != "全部")
+            {
+                bool groupExists = false;
+                foreach (ItemCfg it in cfg.Items)
+                {
+                    if (it.Group == cfg.CurrentGroup) { groupExists = true; break; }
+                }
+                if (!groupExists) cfg.CurrentGroup = "全部";
+            }
         }
 
         // 返回 false = 归档失败（文件占用等），调用方应暂停配置保存
