@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.6.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.5"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.6"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -642,7 +642,7 @@ namespace Koi
                 PlacementTarget = en.Host,
                 Placement = System.Windows.Controls.Primitives.PlacementMode.Top,
                 VerticalOffset = -6,
-                StaysOpen = false,
+                StaysOpen = true, // 不吞点击：左键点图标照常打开文件夹；收起交给鼠标离开计时器
                 AllowsTransparency = true,
                 Child = bd
             };
@@ -814,9 +814,13 @@ namespace Koi
                 PlacementTarget = en.Host,
                 Placement = System.Windows.Controls.Primitives.PlacementMode.Top,
                 VerticalOffset = -6,
-                StaysOpen = false,
+                StaysOpen = true, // 同文件夹弹层：不吞点击，鼠标离开弹层即收起
                 AllowsTransparency = true,
                 Child = bd
+            };
+            popup.MouseLeave += delegate
+            {
+                if (stackPopup == popup) { stackPopup.IsOpen = false; stackPopup = null; }
             };
             stackPopup = popup;
             popup.IsOpen = true;
