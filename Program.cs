@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.4.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.3.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.4.2"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.4.3"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -963,31 +963,99 @@ namespace Koi
             catch { }
         }
 
-        // 复制条目的绝对路径到剪贴板（.lnk 复制原链接路径；Store 应用为其 shell: 形式）
+        // 复制条目的绝对路径到剪贴板（.lnk 复制原链接路径；Store 应用为其 shell: 形式）。
+        // 剪贴板是系统级单例，输入法/剪贴板工具/截图软件可能短暂占用它，
+        // 因此用 DispatcherTimer 在 STA 线程上异步重试（每 200ms 一次、最多约 3 秒），
+        // 全程不阻塞 UI；新复制请求会取消进行中的重试，窗口关闭时一并停止。
+        DispatcherTimer copyRetryTimer;
+        string copyPendingText;
+        int copyRetryCount;
+        Exception copyLastError;
+        const int CopyRetryIntervalMs = 200;
+        const int CopyMaxDurationMs = 3000;
+
         void CopyLocation(ItemCfg c)
         {
-            // 剪贴板是系统级单例，输入法/剪贴板工具/截图软件会短暂占用它，
-            // 单次 SetText 常遇到 CLIPBRD_E_CANT_OPEN——小间隔重试即可拿到
-            const int tries = 10;
-            for (int attempt = 1; attempt <= tries; attempt++)
+            StartCopy(c.Path);
+        }
+
+        void StartCopy(string text)
+        {
+            copyPendingText = text;   // 新请求覆盖旧请求，等于取消进行中的重试
+            copyRetryCount = 0;
+            copyLastError = null;
+            StopCopyRetryTimer();
+            TryCopyNow();
+        }
+
+        void TryCopyNow()
+        {
+            string text = copyPendingText;
+            if (text == null) return;
+            Exception err = null;
+            bool transient = false;
+            try
             {
-                try
-                {
-                    Clipboard.SetText(c.Path);
-                    return; // 写入成功
-                }
-                catch (Exception ex)
-                {
-                    if (attempt == tries)
-                    {
-                        MessageBox.Show(this,
-                            "复制失败：剪贴板被其他程序持续占用，已重试 " + tries + " 次。\n" + ex.Message,
-                            "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-                    Thread.Sleep(60);
-                }
+                Clipboard.SetText(text); // UI 线程即 STA 线程，符合剪贴板操作要求
             }
+            catch (System.Runtime.InteropServices.COMException ce)
+            {
+                err = ce; transient = true; // 打不开剪贴板属于暂时性占用，值得重试
+            }
+            catch (Exception ex)
+            {
+                err = ex; transient = false; // 其他异常：立即失败，不盲目重试
+            }
+
+            if (transient)
+            {
+                copyLastError = err;
+                copyRetryCount++;
+                if (copyRetryCount * CopyRetryIntervalMs >= CopyMaxDurationMs)
+                {
+                    copyPendingText = null;
+                    ShowCopyError(text, err, copyRetryCount);
+                    return;
+                }
+                StartCopyRetryTimer();
+                return;
+            }
+
+            if (err != null)
+            {
+                copyPendingText = null;
+                ShowCopyError(text, err, 1);
+            }
+            // 成功：静默结束，重试状态一并清空
+            copyPendingText = null;
+        }
+
+        void StartCopyRetryTimer()
+        {
+            StopCopyRetryTimer();
+            copyRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CopyRetryIntervalMs) };
+            copyRetryTimer.Tick += delegate
+            {
+                StopCopyRetryTimer();
+                TryCopyNow();
+            };
+            copyRetryTimer.Start();
+        }
+
+        void StopCopyRetryTimer()
+        {
+            if (copyRetryTimer != null) copyRetryTimer.Stop();
+        }
+
+        void ShowCopyError(string text, Exception err, int attempts)
+        {
+            // 不臆断占用来源；完整路径放在弹窗正文中，MessageBox 内按 Ctrl+C 即可选中复制
+            MessageBox.Show(this,
+                "复制到剪贴板失败（已尝试 " + attempts + " 次）。\n\n" +
+                "路径：\n" + text + "\n\n" +
+                "错误：" + err.Message + "\n\n" +
+                "（可能原因：剪贴板被其他程序暂时占用。可在本弹窗内按 Ctrl+C 复制上述路径，稍后手动重试。）",
+                "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         // 强制结束应用的全部进程（程序卡死时用）：
@@ -1144,14 +1212,25 @@ namespace Koi
         // 路径归一化（小写、去结尾分隔符、展开环境变量），用于去重比较
         static string NormalizePathKey(string p)
         {
+            if (string.IsNullOrEmpty(p)) return "";
+            string s = p;
             try
             {
-                if (string.IsNullOrEmpty(p)) return "";
-                string s = Environment.ExpandEnvironmentVariables(p).Trim().Trim('"');
-                s = s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return s.ToLowerInvariant();
+                // GetFullPath 统一分隔符方向、消解 "." ".." 段、补全为绝对路径，
+                // 并保留盘符根目录语义（"C:\" 的结尾反斜杠不会被去掉）。
+                s = Environment.ExpandEnvironmentVariables(p).Trim().Trim('"');
+                return Path.GetFullPath(s).ToLowerInvariant();
             }
-            catch { return p == null ? "" : p.ToLowerInvariant(); }
+            catch
+            {
+                // GetFullPath 失败（非法字符/设备路径等）：退回简单归一化
+                try
+                {
+                    return s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                            .ToLowerInvariant();
+                }
+                catch { return s.ToLowerInvariant(); }
+            }
         }
 
         // 已存在同路径条目时提示用户；返回 true 表示重复（调用方应跳过添加）
@@ -1202,6 +1281,7 @@ namespace Koi
             s = s.Trim().Trim('"').Trim();
             if (s.Length == 0) return;
             try { s = Environment.ExpandEnvironmentVariables(s); } catch { }
+            try { s = Path.GetFullPath(s); } catch { } // 入库前转成规范绝对路径，去重与进程匹配都受益
             if (WarnIfDuplicate(s)) return;
             if (Directory.Exists(s) || File.Exists(s))
             {
@@ -1407,6 +1487,8 @@ namespace Koi
 
         protected override void OnClosed(EventArgs e)
         {
+            StopCopyRetryTimer(); // 窗口退出：停止剪贴板重试，避免计时器残留
+            copyPendingText = null;
             DoSave();
             base.OnClosed(e);
         }
