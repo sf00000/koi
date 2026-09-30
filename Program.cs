@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.2.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.5.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.5.2"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -979,9 +979,9 @@ namespace Koi
         static extern bool OpenClipboard(IntPtr hWndNewOwner);
         [DllImport("user32.dll")]
         static extern bool CloseClipboard();
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         static extern bool EmptyClipboard();
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         static extern IntPtr SetClipboardData(uint format, IntPtr hMem);
         [DllImport("user32.dll")]
         static extern IntPtr GetOpenClipboardOwner();
@@ -996,26 +996,46 @@ namespace Koi
         const uint CF_UNICODETEXT = 13;
         const uint GMEM_MOVEABLE = 0x0002;
 
-        // Win32 直写剪贴板；成功返回 true（内存块归系统所有，勿 GlobalFree）
-        static bool SetClipboardTextWin32(string text)
+        // Win32 直写剪贴板（hwnd 必须是有效窗口句柄：OpenClipboard(NULL) + EmptyClipboard
+        // 会把所有者置空导致 SetClipboardData 必败——微软文档明确的行为）。
+        // 先备好内存再开剪贴板，尽量缩短占用时间；成功返回 null，失败返回带步骤与错误码的描述。
+        static string SetClipboardTextWin32(IntPtr hwnd, string text)
         {
-            if (!OpenClipboard(IntPtr.Zero)) return false;
+            byte[] b = System.Text.Encoding.Unicode.GetBytes(text + "\0");
+            IntPtr hMem = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)b.Length);
+            if (hMem == IntPtr.Zero)
+                return "GlobalAlloc 失败（Win32 错误码 " + Marshal.GetLastWin32Error() + "）";
+            IntPtr p = GlobalLock(hMem);
+            if (p == IntPtr.Zero)
+            {
+                int e = Marshal.GetLastWin32Error();
+                GlobalFree(hMem);
+                return "GlobalLock 失败（Win32 错误码 " + e + "）";
+            }
+            Marshal.Copy(b, 0, p, b.Length);
+            GlobalUnlock(hMem);
+
+            if (!OpenClipboard(hwnd))
+            {
+                int e = Marshal.GetLastWin32Error();
+                GlobalFree(hMem);
+                return "OpenClipboard 失败（Win32 错误码 " + e + "，剪贴板正被其他窗口占用）";
+            }
             try
             {
-                if (!EmptyClipboard()) return false;
-                byte[] b = System.Text.Encoding.Unicode.GetBytes(text + "\0");
-                IntPtr h = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)b.Length);
-                if (h == IntPtr.Zero) return false;
-                IntPtr p = GlobalLock(h);
-                if (p == IntPtr.Zero) { GlobalFree(h); return false; }
-                Marshal.Copy(b, 0, p, b.Length);
-                GlobalUnlock(h);
-                if (SetClipboardData(CF_UNICODETEXT, h) == IntPtr.Zero)
+                if (!EmptyClipboard())
                 {
-                    GlobalFree(h);
-                    return false;
+                    int e = Marshal.GetLastWin32Error();
+                    GlobalFree(hMem);
+                    return "EmptyClipboard 失败（Win32 错误码 " + e + "）";
                 }
-                return true;
+                if (SetClipboardData(CF_UNICODETEXT, hMem) == IntPtr.Zero)
+                {
+                    int e = Marshal.GetLastWin32Error();
+                    GlobalFree(hMem); // 数据未交接成功，仍归我们，需释放
+                    return "SetClipboardData 失败（Win32 错误码 " + e + "）";
+                }
+                return null; // 成功：hMem 所有权已移交系统，勿再释放
             }
             finally
             {
@@ -1059,30 +1079,44 @@ namespace Koi
         {
             string text = copyPendingText;
             if (text == null) return;
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero)
+            {
+                copyPendingText = null;
+                ShowCopyError(text, null, copyRetryCount + 1, "窗口句柄未就绪");
+                return;
+            }
 
-            if (SetClipboardTextWin32(text))
+            string err = SetClipboardTextWin32(hwnd, text);
+            if (err == null)
             {
                 copyPendingText = null; // 成功：静默结束
                 return;
             }
 
+            // 只有"剪贴板被其他窗口占用"（OpenClipboard 步骤）值得重试；
+            // 内存/数据步骤失败立即报告，附带具体步骤与 Win32 错误码
+            bool retryable = err.StartsWith("OpenClipboard");
             copyRetryCount++;
-            if (copyOwnerInfo == null) copyOwnerInfo = ClipboardOwnerInfo();
-            if (copyRetryCount >= CopyMaxRetries)
+            if (retryable && copyOwnerInfo == null) copyOwnerInfo = ClipboardOwnerInfo();
+            if (retryable && copyRetryCount < CopyMaxRetries)
             {
-                copyPendingText = null;
-                ShowCopyError(text, copyOwnerInfo, copyRetryCount);
+                StartCopyRetryTimer();
                 return;
             }
-            if (copyRetryTimer == null)
+            copyPendingText = null;
+            ShowCopyError(text, retryable ? copyOwnerInfo : null, copyRetryCount, err);
+        }
+
+        void StartCopyRetryTimer()
+        {
+            StopCopyRetryTimer();
+            copyRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CopyRetryIntervalMs) };
+            copyRetryTimer.Tick += delegate
             {
-                copyRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CopyRetryIntervalMs) };
-                copyRetryTimer.Tick += delegate
-                {
-                    copyRetryTimer.Stop();
-                    TryCopyNow();
-                };
-            }
+                copyRetryTimer.Stop();
+                TryCopyNow();
+            };
             copyRetryTimer.Start();
         }
 
@@ -1091,11 +1125,12 @@ namespace Koi
             if (copyRetryTimer != null) copyRetryTimer.Stop();
         }
 
-        // 兜底小窗：路径文本已全选，按 Ctrl+C 立即复制；非模态不挡操作
-        void ShowCopyError(string text, string ownerInfo, int attempts)
+        // 兜底小窗：路径文本已全选，按 Ctrl+C 立即复制；挂 Owner 随主窗一起关闭
+        void ShowCopyError(string text, string ownerInfo, int attempts, string err)
         {
             Window w = new Window();
             w.Title = "复制失败 - 按 Ctrl+C 直接复制路径";
+            w.Owner = this; // 必须挂 Owner：否则 OnLastWindowClose 下该窗口会阻止进程退出
             w.Width = 560;
             w.SizeToContent = SizeToContent.Height;
             w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -1104,18 +1139,19 @@ namespace Koi
             StackPanel sp = new StackPanel();
             sp.Margin = new Thickness(16);
             TextBlock tip = new TextBlock();
-            tip.Text = "剪贴板写入失败（已尝试 " + attempts + " 次" +
-                       (ownerInfo != null ? "，当前占用者：" + ownerInfo : "") + "）。\n" +
-                       "下方路径已全选，按 Ctrl+C 即可复制：";
             tip.TextWrapping = TextWrapping.Wrap;
             tip.FontSize = 12.5;
             tip.Margin = new Thickness(0, 0, 0, 10);
+            string head = "剪贴板写入失败（已尝试 " + attempts + " 次）";
+            if (!string.IsNullOrEmpty(ownerInfo)) head += "，当前占用者：" + ownerInfo;
+            if (!string.IsNullOrEmpty(err)) head += "\n失败步骤：" + err;
+            tip.Text = head + "\n\n下方路径已全选，按 Ctrl+C 即可复制：";
+            sp.Children.Add(tip);
             TextBox tb = new TextBox();
             tb.Text = text;
             tb.IsReadOnly = true;
             tb.FontSize = 13;
             tb.Padding = new Thickness(6, 4, 6, 4);
-            sp.Children.Add(tip);
             sp.Children.Add(tb);
             w.Content = sp;
             w.Loaded += delegate
