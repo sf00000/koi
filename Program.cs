@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.4.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.5.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.4"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.5"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -143,16 +143,6 @@ namespace Koi
             };
             SizeChanged += delegate { OnWindowSizeChanged(); }; // 内容变化后统一做屏幕约束
 
-            // 内存空闲瘦身：有交互刷新时间戳，闲置 5 分钟自动回收裁剪
-            MouseMove += delegate { lastActivity = DateTime.Now; };
-            KeyDown += delegate { lastActivity = DateTime.Now; };
-            MouseLeftButtonUp += delegate { lastActivity = DateTime.Now; };
-            trimTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
-            trimTimer.Tick += delegate
-            {
-                if ((DateTime.Now - lastActivity).TotalMinutes >= 5) TrimNow();
-            };
-            trimTimer.Start();
             Loaded += delegate
             {
                 if (cfg.Left.HasValue && cfg.Top.HasValue)
@@ -1804,9 +1794,6 @@ namespace Koi
         const int CopyRetryIntervalMs = 200;
         const int CopyMaxRetries = 15;
 
-        // 内存空闲瘦身：常驻工具闲置 5 分钟后回收并裁剪工作集（WPF 常规做法）
-        DispatcherTimer trimTimer;
-        DateTime lastActivity = DateTime.Now;
         [DllImport("kernel32.dll")]
         static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr min, IntPtr max);
 
@@ -1956,17 +1943,21 @@ namespace Koi
         }
 
         // 内存瘦身：完整 GC + 把工作集换出（任务管理器中的占用会立刻下降）
+        // 手动"立即释放内存"：GC 与工作集裁剪都在后台线程，UI 全程可响应
         void TrimNow()
         {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-            try
+            ThreadPool.QueueUserWorkItem(delegate
             {
-                SetProcessWorkingSetSize(System.Diagnostics.Process.GetCurrentProcess().Handle,
-                    (IntPtr)(-1), (IntPtr)(-1));
-            }
-            catch { }
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                try
+                {
+                    SetProcessWorkingSetSize(System.Diagnostics.Process.GetCurrentProcess().Handle,
+                        (IntPtr)(-1), (IntPtr)(-1));
+                }
+                catch { }
+            });
         }
 
         void StopCopyRetryTimer()
@@ -2661,17 +2652,42 @@ namespace Koi
         [DllImport("gdi32.dll")]
         static extern bool DeleteObject(IntPtr hObject);
 
+        // 会话级图标缓存（LRU，上限 64 个）：弹层反复打开零成本；超容量按最近使用淘汰
+        const int IconCacheCap = 64;
         static readonly Dictionary<string, ImageSource> cache =
-            new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase); // 会话级图标缓存：弹层反复打开零成本
+            new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase);
+        static readonly List<string> cacheOrder = new List<string>(); // 访问序：尾=最新
+
+        static ImageSource CacheGet(string key)
+        {
+            ImageSource hit;
+            if (!cache.TryGetValue(key, out hit)) return null;
+            cacheOrder.Remove(key);
+            cacheOrder.Add(key); // 刷新最近使用
+            return hit;
+        }
+
+        static void CacheStore(string key, ImageSource s)
+        {
+            if (cache.ContainsKey(key)) cacheOrder.Remove(key);
+            cache[key] = s;
+            cacheOrder.Add(key);
+            while (cacheOrder.Count > IconCacheCap)
+            {
+                string oldest = cacheOrder[0];
+                cacheOrder.RemoveAt(0);
+                cache.Remove(oldest);
+            }
+        }
 
         public static ImageSource ResolveIcon(ItemCfg c)
         {
             string key = (c.Path ?? "") + "|" + (c.Icon ?? "");
-            ImageSource hit;
-            if (cache.TryGetValue(key, out hit)) return hit;
+            ImageSource hit = CacheGet(key);
+            if (hit != null) return hit;
             ImageSource s = ResolveIconCore(c);
             if (s == null) s = DefaultIcon();
-            cache[key] = s;
+            CacheStore(key, s);
             return s;
         }
 
