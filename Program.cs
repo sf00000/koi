@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.5.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.5.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.6.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.6.0.0")]
 
 namespace Koi
 {
@@ -42,6 +42,7 @@ namespace Koi
         public string Name;
         public string Path;
         public string Icon; // 可选：自定义图标文件（png/jpg/ico），如 Store 应用无法自动取图标时使用
+        public List<string> Stack; // 文件堆叠：非空且 ≥2 时该条目是"文件堆"，Path 为最上层文件
     }
 
     public class Config
@@ -65,6 +66,9 @@ namespace Koi
         public TextBlock Caption;  // 图标下方常显名称
         public StackPanel Host;    // 图标+名称 的纵向组合，鱼眼 ZIndex 作用在它上面
         public ScaleTransform Scale;
+        public Grid ImgWrap;       // 图标容器：堆叠时在其下垫"叠纸"
+        public System.Windows.Shapes.Path StackBack1, StackBack2; // 堆叠视觉的底层纸片
+        public bool Stackable;     // 是否可参与堆叠（普通文件，非 exe/lnk/目录/Store 应用）
     }
 
     public class DockWindow : Window
@@ -73,7 +77,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.5.2"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.6.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -278,10 +282,11 @@ namespace Koi
             row.MouseLeave += OnFisheyeLeave;
         }
 
-        void AddEntry(ItemCfg c, bool save)
+        void AddEntry(ItemCfg c, bool save, int index = -1)
         {
             DockEntry en = new DockEntry();
             en.Cfg = c;
+            en.Stackable = ComputeStackable(c.Path);
 
             Image img = new Image();
             img.Source = ShellIcons.ResolveIcon(c);
@@ -294,17 +299,61 @@ namespace Koi
             img.RenderTransform = en.Scale;
             img.Margin = new Thickness(0, 0, 0, 0);
             img.SetValue(RenderOptions.BitmapScalingModeProperty, BitmapScalingMode.HighQuality);
-            img.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); };
+            img.MouseEnter += delegate
+            {
+                if (IsStack(en)) { ShowStackPopup(en); return; } // 文件堆：悬停弹出文件选择列表
+                hoveredEntry = en;
+                ShowNameLabel(en);
+            };
             img.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
             img.MouseLeftButtonUp += delegate
             {
                 bool wasDrag = dragStarted;
+                DockEntry mergeT = wasDrag ? dropMergeTarget : null;
+                if (wasDrag && mergeT != null)
+                {
+                    // 拖放合并：拖起的文件并入目标文件堆（目标可能是普通文件或已有堆）
+                    dragStarted = false;
+                    if (en.Img.IsMouseCaptured) en.Img.ReleaseMouseCapture();
+                    en.Scale.ScaleX = 1; en.Scale.ScaleY = 1;
+                    en.Host.RenderTransform = null;
+                    Panel.SetZIndex(en.Host, 0);
+                    row.Children.Remove(en.Host);
+                    entries.Remove(en);
+                    dragEntry = null; reorderSource = null; dropMergeTarget = null;
+                    nameLabel.Visibility = Visibility.Collapsed; hoveredEntry = null;
+                    MergeIntoStack(mergeT, en.Cfg.Path);
+                    UpdateAutoSpacing();
+                    ScheduleSave();
+                    return;
+                }
                 EndReorder(en);
-                if (!wasDrag) Launch(c);
+                if (!wasDrag) { if (IsStack(en)) ShowStackPopup(en); else Launch(c); }
             };
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
             img.ContextMenu = BuildItemMenu(en);
             en.Img = img;
+
+            // 堆叠视觉：图标下垫两张微旋转的"纸片"，仅文件堆显示
+            Grid imgWrap = new Grid();
+            System.Windows.Shapes.Path back1 = MakeStackPaper(img.Width);
+            System.Windows.Shapes.Path back2 = MakeStackPaper(img.Width);
+            back1.RenderTransform = new TransformGroup
+            {
+                Children = { new RotateTransform(-5), new TranslateTransform(-4, 0) }
+            };
+            back2.RenderTransform = new TransformGroup
+            {
+                Children = { new RotateTransform(6), new TranslateTransform(5, -1) }
+            };
+            back1.Visibility = Visibility.Collapsed;
+            back2.Visibility = Visibility.Collapsed;
+            en.StackBack1 = back1;
+            en.StackBack2 = back2;
+            imgWrap.Children.Add(back2);
+            imgWrap.Children.Add(back1);
+            imgWrap.Children.Add(img);
+            en.ImgWrap = imgWrap;
 
             // Mac 式拖动排序：按住移动即抬起跟随光标，实时换位，松手回弹落位
             img.PreviewMouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e2)
@@ -329,9 +378,18 @@ namespace Koi
             cap.MaxHeight = 30; // 两行封顶
             cap.Margin = new Thickness(0, 2, 0, 0);
             cap.Visibility = cfg.ShowNames ? Visibility.Visible : Visibility.Collapsed;
-            cap.MouseLeftButtonUp += delegate { Launch(c); };
+            cap.MouseLeftButtonUp += delegate
+            {
+                if (IsStack(en)) { ShowStackPopup(en); return; }
+                Launch(c);
+            };
             cap.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
-            cap.MouseEnter += delegate { hoveredEntry = en; ShowNameLabel(en); }; // 悬停名称同样弹出全名胶囊
+            cap.MouseEnter += delegate
+            {
+                if (IsStack(en)) { ShowStackPopup(en); return; }
+                hoveredEntry = en;
+                ShowNameLabel(en);
+            }; // 悬停名称同样弹出全名胶囊
             cap.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
             cap.Tag = "cap"; // OnWindowPreviewDown 用它区分"点在名称上"
             cap.ContextMenu = BuildItemMenu(en); // 名称右键 = 图标右键，统一操作
@@ -341,12 +399,21 @@ namespace Koi
             host.Orientation = Orientation.Vertical;
             double m = Math.Round(IconSizePx() * 0.18); // 间距随图标尺寸自动调整
             host.Margin = new Thickness(m, 0, m, 0);
-            host.Children.Add(img);
+            host.Children.Add(imgWrap);
             host.Children.Add(cap);
             en.Host = host;
 
-            row.Children.Add(host);
-            entries.Add(en);
+            if (index >= 0 && index <= entries.Count)
+            {
+                entries.Insert(index, en);
+                row.Children.Insert(index + 1, host); // row[0] 是提示文字
+            }
+            else
+            {
+                entries.Add(en);
+                row.Children.Add(host);
+            }
+            UpdateStackVisual(en);
             UpdateHint();
             UpdateAutoSpacing(); // 新增后间距重排（布局未刷新时函数内部会跳过，由 SizeChanged 兜底）
             if (save) ScheduleSave();
@@ -357,9 +424,191 @@ namespace Koi
             hint.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         }
 
+        // ---------------- 文件堆叠 ----------------
+
+        DockEntry dropMergeTarget; // 拖动悬停时可能合并到的目标文件
+        System.Windows.Controls.Primitives.Popup stackPopup; // 文件堆的悬停选择列表
+
+        // 只有"普通文件"可堆叠：排除目录、exe/lnk/url/bat/cmd（应用类）、Store 应用
+        static bool ComputeStackable(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || path.StartsWith("shell:")) return false;
+                if (Directory.Exists(path)) return false;
+                if (!File.Exists(path)) return false;
+                string ext = Path.GetExtension(path).ToLowerInvariant();
+                return ext != ".exe" && ext != ".lnk" && ext != ".url" && ext != ".bat" && ext != ".cmd";
+            }
+            catch { return false; }
+        }
+
+        bool IsStack(DockEntry en)
+        {
+            return en.Cfg.Stack != null && en.Cfg.Stack.Count >= 2;
+        }
+
+        // 堆叠视觉里的"纸片"（描边圆角矩形，倾斜摆放）
+        System.Windows.Shapes.Path MakeStackPaper(double size)
+        {
+            System.Windows.Shapes.Path p = new System.Windows.Shapes.Path();
+            p.Data = new RectangleGeometry(new Rect(0, 0, size, size), 8, 8);
+            p.Fill = new SolidColorBrush(Color.FromArgb(0x66, 0x2A, 0x2E, 0x36));
+            p.Stroke = normalBorder;
+            p.StrokeThickness = 1;
+            p.Width = size;
+            p.Height = size;
+            p.Stretch = Stretch.None;
+            p.IsHitTestVisible = false;
+            return p;
+        }
+
+        // 按条目的堆叠状态切换"叠纸"显示
+        void UpdateStackVisual(DockEntry en)
+        {
+            if (en.StackBack1 == null) return;
+            bool isStack = IsStack(en);
+            en.StackBack1.Visibility = isStack ? Visibility.Visible : Visibility.Collapsed;
+            en.StackBack2.Visibility = isStack ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        // 把拖来的文件并入目标（目标可能是普通文件或已有文件堆）
+        void MergeIntoStack(DockEntry target, string draggedPath)
+        {
+            if (target.Cfg.Stack == null) target.Cfg.Stack = new List<string>();
+            if (!target.Cfg.Stack.Contains(target.Cfg.Path))
+                target.Cfg.Stack.Insert(0, target.Cfg.Path); // 首位 = 最上层文件
+            if (!target.Cfg.Stack.Contains(draggedPath))
+                target.Cfg.Stack.Add(draggedPath);
+            if (target.Img.Opacity < 1) target.Img.Opacity = 1; // 撤掉拖动高亮
+            UpdateStackVisual(target);
+        }
+
+        // 拆开文件堆：原地还原为独立条目
+        void Unstack(DockEntry en)
+        {
+            List<string> paths = en.Cfg.Stack;
+            if (paths == null || paths.Count == 0) return;
+            int at = entries.IndexOf(en);
+            if (hoveredEntry == en)
+            {
+                hoveredEntry = null;
+                nameLabel.Visibility = Visibility.Collapsed;
+            }
+            if (dragEntry == en) EndReorder(en);
+            reorderSource = null;
+            if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
+            row.Children.Remove(en.Host);
+            entries.Remove(en);
+            UpdateHint();
+            for (int i = 0; i < paths.Count; i++)
+            {
+                ItemCfg c = new ItemCfg();
+                c.Path = paths[i];
+                c.Name = PrettyName(paths[i]);
+                AddEntry(c, true, at + i);
+            }
+        }
+
+        // 悬停文件堆弹出文件选择列表（点击打开对应文件）
+        void ShowStackPopup(DockEntry en)
+        {
+            List<string> list = en.Cfg.Stack;
+            if (list == null || list.Count == 0) return;
+            if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
+
+            StackPanel listPanel = new StackPanel { MinWidth = 230 };
+            foreach (string path in list)
+            {
+                string p = path; // 闭包捕获
+                Border rowB = new Border
+                {
+                    Padding = new Thickness(8, 5, 10, 5),
+                    CornerRadius = new CornerRadius(6),
+                    Background = Brushes.Transparent,
+                    Cursor = Cursors.Hand
+                };
+                Grid g = new Grid();
+                ColumnDefinition c0 = new ColumnDefinition { Width = GridLength.Auto };
+                ColumnDefinition c1 = new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) };
+                g.ColumnDefinitions.Add(c0);
+                g.ColumnDefinitions.Add(c1);
+                Image ic = new Image
+                {
+                    Width = 26,
+                    Height = 26,
+                    Margin = new Thickness(0, 0, 8, 0),
+                    Source = ShellIcons.ResolveIcon(new ItemCfg { Path = p }) ?? ShellIcons.DefaultIcon()
+                };
+                Grid.SetColumn(ic, 0);
+                TextBlock t = new TextBlock
+                {
+                    Text = PrettyName(p),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    FontSize = 12.5,
+                    Foreground = new SolidColorBrush(Color.FromArgb(0xEE, 0xE8, 0xEA, 0xED)),
+                    TextTrimming = TextTrimming.CharacterEllipsis
+                };
+                Grid.SetColumn(t, 1);
+                g.Children.Add(ic);
+                g.Children.Add(t);
+                rowB.Child = g;
+                rowB.MouseEnter += delegate { rowB.Background = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)); };
+                rowB.MouseLeave += delegate { rowB.Background = Brushes.Transparent; };
+                rowB.MouseLeftButtonUp += delegate
+                {
+                    if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
+                    Launch(new ItemCfg { Path = p });
+                };
+                listPanel.Children.Add(rowB);
+            }
+            ScrollViewer sv = new ScrollViewer
+            {
+                Content = listPanel,
+                MaxHeight = 340,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            };
+            Border bd = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0xF2, 0x20, 0x23, 0x28)),
+                BorderBrush = normalBorder,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(6),
+                Child = sv
+            };
+            System.Windows.Controls.Primitives.Popup popup = new System.Windows.Controls.Primitives.Popup
+            {
+                PlacementTarget = en.Host,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Top,
+                VerticalOffset = -6,
+                StaysOpen = false,
+                AllowsTransparency = true,
+                Child = bd
+            };
+            stackPopup = popup;
+            popup.IsOpen = true;
+        }
+
         ContextMenu BuildItemMenu(DockEntry en)
         {
             ContextMenu m = new ContextMenu();
+            if (IsStack(en))
+            {
+                // 文件堆菜单：打开最上层 / 就地列出全部文件 / 拆开堆叠
+                m.Items.Add(Mi("打开（最上层文件）", delegate { Launch(new ItemCfg { Path = en.Cfg.Stack[0] }); }));
+                foreach (string p in en.Cfg.Stack)
+                {
+                    string captured = p;
+                    m.Items.Add(Mi("打开 " + PrettyName(p), delegate { Launch(new ItemCfg { Path = captured }); }));
+                }
+                m.Items.Add(new Separator());
+                m.Items.Add(Mi("拆开堆叠（还原为独立图标）", delegate { Unstack(en); }));
+                m.Items.Add(new Separator());
+                m.Items.Add(Mi("重命名…", delegate { Rename(en); }));
+                m.Items.Add(Mi("移除整个文件堆", delegate { Remove(en); }));
+                return m;
+            }
             m.Items.Add(Mi("打开", delegate { Launch(en.Cfg); }));
             m.Items.Add(Mi("打开文件位置", delegate { OpenLocation(en.Cfg); }));
             m.Items.Add(Mi("复制文件位置", delegate { CopyLocation(en.Cfg); }));
@@ -521,6 +770,36 @@ namespace Koi
                 // 刷新过程中捕获可能已被系统剥夺：收尾，防止图标悬空
                 if (!src.Img.IsMouseCaptured) { EndReorder(src); return; }
             }
+
+            // 文件堆叠：拖"普通文件"悬停到另一个"文件/文件堆"上时高亮提示，松手合并
+            DockEntry newMergeTarget = null;
+            if (src.Stackable && (src.Cfg.Stack == null || src.Cfg.Stack.Count == 0))
+            {
+                foreach (DockEntry en in entries)
+                {
+                    if (en == src || !en.Stackable) continue;
+                    double ecx = en.Img.TranslatePoint(new Point(en.Img.ActualWidth / 2.0, 0), row).X;
+                    if (Math.Abs(p.X - ecx) < en.Img.ActualWidth * 0.45) { newMergeTarget = en; break; }
+                }
+            }
+            if (newMergeTarget != dropMergeTarget)
+            {
+                if (dropMergeTarget != null) dropMergeTarget.Img.Opacity = 1; // 撤销旧目标高亮
+                dropMergeTarget = newMergeTarget;
+                if (dropMergeTarget != null)
+                {
+                    dropMergeTarget.Img.Opacity = 0.5;
+                    hoveredEntry = dropMergeTarget;
+                    ((TextBlock)nameLabel.Child).Text = "松手叠加到「" + dropMergeTarget.Cfg.Name + "」";
+                    nameLabel.Visibility = Visibility.Visible;
+                    PositionNameLabel(dropMergeTarget);
+                }
+                else
+                {
+                    nameLabel.Visibility = Visibility.Collapsed;
+                    hoveredEntry = null;
+                }
+            }
         }
 
         void EndReorder(DockEntry en)
@@ -549,6 +828,13 @@ namespace Koi
                 }
                 ScheduleSave();
             }
+            // 清理拖动过程中的合并目标高亮与提示
+            if (dropMergeTarget != null)
+            {
+                if (dropMergeTarget.Img.Opacity < 1) dropMergeTarget.Img.Opacity = 1;
+                dropMergeTarget = null;
+            }
+            nameLabel.Visibility = Visibility.Collapsed;
             dragEntry = null;
             reorderSource = null;
         }
