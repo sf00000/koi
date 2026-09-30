@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.2.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.2.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.2.1"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.2.2"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -209,7 +209,9 @@ namespace Koi
             // 图标行放进横向滚动容器：图标缩到 32px 仍放不下时可横向滚动访问。
             // 放大所需的顶部留白放在滚动内容内部（scrollInner 上边距=0.8×图标），鱼眼放大部分不会被视口裁掉
             scrollInner = new Grid();
-            scrollInner.Margin = new Thickness(0, Math.Round(FisheyeAmp * IconSizePx() + 6), 12, 10); // 上=放大留白（随 FisheyeAmp），右留余量，下留名称空间
+            // 左右也要放大幅度一半的留白：首个图标放大后向左膨胀不会被视口裁剪
+            double sidePad = Math.Round(FisheyeAmp * IconSizePx() / 2);
+            scrollInner.Margin = new Thickness(sidePad, Math.Round(FisheyeAmp * IconSizePx() + 6), sidePad + 12, 10);
             scrollInner.Children.Add(row);
 
             // 滚动视口本身让开＋按钮的宽度：内容滚动时图标不会滑到＋按钮底下被遮挡
@@ -759,7 +761,7 @@ namespace Koi
             }
             root.RowDefinitions[0].Height = new GridLength(FisheyeAmp * v + 6, GridUnitType.Pixel);
             root.RowDefinitions[1].Height = new GridLength(v + 44, GridUnitType.Pixel); // 图标+两行名称
-            if (scrollInner != null) scrollInner.Margin = new Thickness(0, Math.Round(FisheyeAmp * v + 6), 12, 10);
+            if (scrollInner != null) scrollInner.Margin = new Thickness(Math.Round(FisheyeAmp * v / 2), Math.Round(FisheyeAmp * v + 6), Math.Round(FisheyeAmp * v / 2) + 12, 10);
             if (scroller != null) scroller.Margin = new Thickness(PlusWidth() + 10, 0, 0, 0);
             UpdateLayout();
             UpdateAutoSpacing(); // 图标尺寸变化后间距重排
@@ -975,59 +977,97 @@ namespace Koi
         void DoKillApp(ItemCfg c)
         {
             string name = c.Name;
-            HashSet<int> pids = FindAppProcessIds(c.Path);
-            if (pids.Count == 0)
+            List<Process> created = new List<Process>(); // 所有打开的进程对象，finally 统一释放
+            string failReason = null;
+            int total = 0, killed = 0, uncertain = 0;
+            try
             {
-                Dispatcher.BeginInvoke(new Action(delegate
+                HashSet<int> pids = FindAppProcessIds(c.Path);
+                if (pids.Count == 0)
                 {
-                    MessageBox.Show(this, "「" + name + "」当前没有正在运行的进程。", "Koi");
-                }));
-                return;
-            }
-            int total = pids.Count;
+                    Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        MessageBox.Show(this, "「" + name + "」当前没有正在运行的进程。", "Koi");
+                    }));
+                    return;
+                }
+                total = pids.Count;
 
-            List<Process> alive = new List<Process>();
-            foreach (int id in pids)
+                List<Process> alive = new List<Process>();
+                foreach (int id in pids)
+                {
+                    try
+                    {
+                        Process p = Process.GetProcessById(id);
+                        if (p != null && !p.HasExited) { alive.Add(p); created.Add(p); }
+                        else if (p != null) { created.Add(p); }
+                    }
+                    catch { }
+                }
+
+                // 第一阶段：优雅关闭
+                foreach (Process p in alive)
+                {
+                    try { p.CloseMainWindow(); } catch { }
+                }
+                DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+                while (DateTime.UtcNow < deadline)
+                {
+                    alive.RemoveAll(delegate(Process p)
+                    {
+                        try { return p.HasExited; } // 确认退出
+                        catch { return false; }     // 检查失败（权限等）：保留待查，不能当成已退出
+                    });
+                    if (alive.Count == 0) break;
+                    Thread.Sleep(100);
+                }
+
+                // 第二阶段：强杀残余
+                foreach (Process p in alive)
+                {
+                    try { if (!p.HasExited) p.Kill(); } catch { }
+                }
+                deadline = DateTime.UtcNow.AddSeconds(3);
+                while (DateTime.UtcNow < deadline)
+                {
+                    alive.RemoveAll(delegate(Process p)
+                    {
+                        try { return p.HasExited; }
+                        catch (Exception ex) { failReason = ex.Message; return false; } // 保留并记录原因
+                    });
+                    if (alive.Count == 0) break;
+                    Thread.Sleep(100);
+                }
+                uncertain = alive.Count;
+            }
+            catch (Exception ex)
             {
-                try { Process p = Process.GetProcessById(id); if (p != null && !p.HasExited) alive.Add(p); }
-                catch { }
+                failReason = ex.Message;
+            }
+            finally
+            {
+                foreach (Process p in created) try { p.Dispose(); } catch { }
             }
 
-            // 第一阶段：优雅关闭
-            foreach (Process p in alive)
+            string msg;
+            System.Windows.MessageBoxImage icon = System.Windows.MessageBoxImage.Information;
+            if (failReason != null)
             {
-                try { p.CloseMainWindow(); } catch { }
+                msg = "结束「" + name + "」时出现错误，无法确认进程状态：" + failReason;
+                icon = System.Windows.MessageBoxImage.Warning;
             }
-            DateTime deadline = DateTime.UtcNow.AddSeconds(2);
-            while (DateTime.UtcNow < deadline)
+            else if (uncertain > 0)
             {
-                alive.RemoveAll(delegate(Process p) { try { return p.HasExited; } catch { return true; } });
-                if (alive.Count == 0) break;
-                Thread.Sleep(100);
+                msg = "「" + name + "」仍有 " + uncertain + " / " + total + " 个进程未能结束（可能需要管理员权限）。";
+                icon = System.Windows.MessageBoxImage.Warning;
             }
-
-            // 第二阶段：强杀残余
-            foreach (Process p in alive)
+            else
             {
-                try { if (!p.HasExited) p.Kill(); } catch { }
+                msg = "已结束「" + name + "」的 " + total + " 个进程。";
             }
-            deadline = DateTime.UtcNow.AddSeconds(3);
-            while (DateTime.UtcNow < deadline)
-            {
-                alive.RemoveAll(delegate(Process p) { try { return p.HasExited; } catch { return true; } });
-                if (alive.Count == 0) break;
-                Thread.Sleep(100);
-            }
-            foreach (Process p in alive) try { p.Dispose(); } catch { }
-
-            string msg = alive.Count == 0
-                ? "已结束「" + name + "」的 " + total + " 个进程。"
-                : "「" + name + "」仍有 " + alive.Count + " 个进程未能结束（可能需要管理员权限）。";
-            bool warn = alive.Count > 0;
             Dispatcher.BeginInvoke(new Action(delegate
             {
-                MessageBox.Show(this, msg, "Koi", MessageBoxButton.OK,
-                    warn ? MessageBoxImage.Warning : MessageBoxImage.Information);
+                MessageBox.Show(this, msg, "Koi", MessageBoxButton.OK, icon);
             }));
         }
 
