@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.4.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.2.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.4.1"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.4.2"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -1141,6 +1141,37 @@ namespace Koi
             ScheduleSave();
         }
 
+        // 路径归一化（小写、去结尾分隔符、展开环境变量），用于去重比较
+        static string NormalizePathKey(string p)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(p)) return "";
+                string s = Environment.ExpandEnvironmentVariables(p).Trim().Trim('"');
+                s = s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return s.ToLowerInvariant();
+            }
+            catch { return p == null ? "" : p.ToLowerInvariant(); }
+        }
+
+        // 已存在同路径条目时提示用户；返回 true 表示重复（调用方应跳过添加）
+        bool WarnIfDuplicate(string path)
+        {
+            string key = NormalizePathKey(path);
+            if (key.Length == 0) return false;
+            foreach (DockEntry en in entries)
+            {
+                if (NormalizePathKey(en.Cfg.Path) == key)
+                {
+                    MessageBox.Show(this,
+                        "「" + en.Cfg.Name + "」已经在 Dock 里了，无需重复添加。",
+                        "Koi", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return true;
+                }
+            }
+            return false;
+        }
+
         void BrowseAdd()
         {
             OpenFileDialog dlg = new OpenFileDialog();
@@ -1151,6 +1182,7 @@ namespace Koi
             {
                 foreach (string f in dlg.FileNames)
                 {
+                    if (WarnIfDuplicate(f)) continue;
                     ItemCfg c = new ItemCfg();
                     c.Path = f;
                     c.Name = PrettyName(f);
@@ -1170,6 +1202,7 @@ namespace Koi
             s = s.Trim().Trim('"').Trim();
             if (s.Length == 0) return;
             try { s = Environment.ExpandEnvironmentVariables(s); } catch { }
+            if (WarnIfDuplicate(s)) return;
             if (Directory.Exists(s) || File.Exists(s))
             {
                 ItemCfg c = new ItemCfg();
@@ -1190,6 +1223,7 @@ namespace Koi
             dlg.ShowNewFolderButton = false;
             if (dlg.ShowDialog() == WinForms.DialogResult.OK)
             {
+                if (WarnIfDuplicate(dlg.SelectedPath)) return;
                 ItemCfg c = new ItemCfg();
                 c.Path = dlg.SelectedPath;
                 c.Name = PrettyName(c.Path);
@@ -1246,6 +1280,7 @@ namespace Koi
             if (files == null) return;
             foreach (string f in files)
             {
+                if (WarnIfDuplicate(f)) continue;
                 ItemCfg c = new ItemCfg();
                 c.Path = f;
                 c.Name = PrettyName(f);
