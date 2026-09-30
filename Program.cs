@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.2.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.3.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.2"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.3"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -142,6 +142,17 @@ namespace Koi
                 HandleScreenChanged(); // 拖到不同分辨率/缩放的屏幕时刷新宽度上限
             };
             SizeChanged += delegate { OnWindowSizeChanged(); }; // 内容变化后统一做屏幕约束
+
+            // 内存空闲瘦身：有交互刷新时间戳，闲置 5 分钟自动回收裁剪
+            MouseMove += delegate { lastActivity = DateTime.Now; };
+            KeyDown += delegate { lastActivity = DateTime.Now; };
+            MouseLeftButtonUp += delegate { lastActivity = DateTime.Now; };
+            trimTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
+            trimTimer.Tick += delegate
+            {
+                if ((DateTime.Now - lastActivity).TotalMinutes >= 5) TrimNow();
+            };
+            trimTimer.Start();
             Loaded += delegate
             {
                 if (cfg.Left.HasValue && cfg.Top.HasValue)
@@ -1010,6 +1021,7 @@ namespace Koi
             m.Items.Add(Mi("背景更透明（Ctrl+滚轮 ↓）", delegate { SetOpacity(cfg.Opacity - 0.08); }));
             m.Items.Add(Mi("背景更不透明（Ctrl+滚轮 ↑）", delegate { SetOpacity(cfg.Opacity + 0.08); }));
             m.Items.Add(Mi("恢复默认透明度", delegate { SetOpacity(0.72); }));
+            m.Items.Add(Mi("立即释放内存", delegate { TrimNow(); }));
 
             MenuItem names = Mi("显示图标名称", null);
             names.IsCheckable = true;
@@ -1787,6 +1799,12 @@ namespace Koi
         const int CopyRetryIntervalMs = 200;
         const int CopyMaxRetries = 15;
 
+        // 内存空闲瘦身：常驻工具闲置 5 分钟后回收并裁剪工作集（WPF 常规做法）
+        DispatcherTimer trimTimer;
+        DateTime lastActivity = DateTime.Now;
+        [DllImport("kernel32.dll")]
+        static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr min, IntPtr max);
+
         [DllImport("user32.dll", SetLastError = true)]
         static extern bool OpenClipboard(IntPtr hWndNewOwner);
         [DllImport("user32.dll")]
@@ -1930,6 +1948,20 @@ namespace Koi
                 TryCopyNow();
             };
             copyRetryTimer.Start();
+        }
+
+        // 内存瘦身：完整 GC + 把工作集换出（任务管理器中的占用会立刻下降）
+        void TrimNow()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            try
+            {
+                SetProcessWorkingSetSize(System.Diagnostics.Process.GetCurrentProcess().Handle,
+                    (IntPtr)(-1), (IntPtr)(-1));
+            }
+            catch { }
         }
 
         void StopCopyRetryTimer()
@@ -2624,7 +2656,21 @@ namespace Koi
         [DllImport("gdi32.dll")]
         static extern bool DeleteObject(IntPtr hObject);
 
+        static readonly Dictionary<string, ImageSource> cache =
+            new Dictionary<string, ImageSource>(StringComparer.OrdinalIgnoreCase); // 会话级图标缓存：弹层反复打开零成本
+
         public static ImageSource ResolveIcon(ItemCfg c)
+        {
+            string key = (c.Path ?? "") + "|" + (c.Icon ?? "");
+            ImageSource hit;
+            if (cache.TryGetValue(key, out hit)) return hit;
+            ImageSource s = ResolveIconCore(c);
+            if (s == null) s = DefaultIcon();
+            cache[key] = s;
+            return s;
+        }
+
+        static ImageSource ResolveIconCore(ItemCfg c)
         {
             if (!string.IsNullOrEmpty(c.Icon))
             {
@@ -2703,7 +2749,7 @@ namespace Koi
             try
             {
                 BitmapSource bs = Imaging.CreateBitmapSourceFromHIcon(
-                    hIcon, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                    hIcon, Int32Rect.Empty, BitmapSizeOptions.FromWidthAndHeight(192, 192)); // 256→192：鱼眼 1.9x 下无感知差异，省 44% 位图内存
                 bs.Freeze();
                 return bs;
             }
