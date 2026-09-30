@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.4.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.3"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.4"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -574,9 +574,14 @@ namespace Koi
 
             StackPanel listPanel = new StackPanel { MinWidth = 260 };
 
-            // 头部动作：打开文件夹 / 在此打开终端 / 用 Cursor 打开
+            // 头部动作：打开文件夹 / 在此打开终端 / 用 Cursor 打开 / 复制文件夹路径
             listPanel.Children.Add(FlyoutRow("📂 打开文件夹", delegate { RunPath(dir); }));
             listPanel.Children.Add(FlyoutRow("⌨ 在此打开终端", delegate { OpenTerminalAt(dir); }));
+            listPanel.Children.Add(FlyoutRow("📋 复制文件夹路径", delegate
+            {
+                CloseFolderFlyout();
+                CopyLocation(new ItemCfg { Path = dir, Name = en.Cfg.Name });
+            }));
             if (CursorAvailable())
                 listPanel.Children.Add(FlyoutRow("✎ 用 Cursor 打开", delegate { OpenCursorAt(dir); }));
             listPanel.Children.Add(new System.Windows.Shapes.Rectangle
