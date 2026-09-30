@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.3.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.4.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -199,6 +199,7 @@ namespace Koi
             plus.MouseLeftButtonUp += delegate
             {
                 ContextMenu m = new ContextMenu();
+                m.Items.Add(Mi("通过路径添加…", delegate { AddByPath(); }));
                 m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
                 m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
                 m.PlacementTarget = plus;
@@ -1145,6 +1146,30 @@ namespace Koi
                     c.Name = PrettyName(f);
                     AddEntry(c, true);
                 }
+            }
+        }
+
+        // 通过粘贴绝对路径添加：自动去引号、展开环境变量（%APPDATA% 等），
+        // 识别文件夹/文件后按类型命名并加入 Dock
+        void AddByPath()
+        {
+            string s = VB.Interaction.InputBox(
+                "粘贴程序、快捷方式或文件夹的绝对路径：\n（支持带引号与环境变量，如 %APPDATA%）",
+                "通过路径添加", "", -1, -1);
+            if (string.IsNullOrEmpty(s)) return;
+            s = s.Trim().Trim('"').Trim();
+            if (s.Length == 0) return;
+            try { s = Environment.ExpandEnvironmentVariables(s); } catch { }
+            if (Directory.Exists(s) || File.Exists(s))
+            {
+                ItemCfg c = new ItemCfg();
+                c.Path = s;
+                c.Name = PrettyName(s);
+                AddEntry(c, true);
+            }
+            else
+            {
+                MessageBox.Show(this, "路径不存在：\n" + s, "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
