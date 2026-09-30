@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.8.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.8.1.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.2.0")]
 
 namespace Koi
 {
@@ -87,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.8.1"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.2"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -315,8 +315,9 @@ namespace Koi
             DockEntry en = new DockEntry();
             en.Cfg = c;
             en.Stackable = ComputeStackable(c.Path);
-            // 分组视图内添加：默认归入当前组，保证"看得见"与"归属"一致
-            if (cfg.CurrentGroup != "全部" && string.IsNullOrEmpty(c.Group)) c.Group = cfg.CurrentGroup;
+            // 分组视图内"用户新增"：默认归入当前组，保证"看得见"与"归属"一致。
+            // 仅限 save=true（用户主动添加）；启动恢复配置走 save=false，绝不能改写原归属
+            if (save && cfg.CurrentGroup != "全部" && string.IsNullOrEmpty(c.Group)) c.Group = cfg.CurrentGroup;
 
             Image img = new Image();
             img.Source = ShellIcons.ResolveIcon(c);
@@ -375,12 +376,15 @@ namespace Koi
                 if (!wasDrag) { if (IsStack(en)) ShowStackPopup(en); else Launch(c); }
             };
             img.MouseLeftButtonDown += delegate(object s, MouseButtonEventArgs e) { e.Handled = true; };
-            // 右键打开时重建条目菜单（移动到分组列表是动态内容）
-            img.ContextMenuOpening += delegate
+            // 右键打开时重建条目菜单（移动到分组列表是动态内容）。
+            // Handled=true 必须设置：否则事件冒泡到滚动区会被全局菜单接管
+            img.ContextMenuOpening += delegate(object s, ContextMenuEventArgs ce)
             {
+                ce.Handled = true;
                 ContextMenu mm = BuildItemMenu(en);
                 mm.PlacementTarget = img;
                 img.ContextMenu = mm;
+                mm.IsOpen = true;
             };
             en.Img = img;
 
@@ -442,7 +446,14 @@ namespace Koi
             }; // 悬停名称同样弹出全名胶囊
             cap.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
             cap.Tag = "cap"; // OnWindowPreviewDown 用它区分"点在名称上"
-            cap.ContextMenuOpening += delegate { cap.ContextMenu = BuildItemMenu(en); }; // 名称右键 = 图标右键，统一操作（打开时重建）
+            cap.ContextMenuOpening += delegate(object s, ContextMenuEventArgs ce)
+            {
+                ce.Handled = true;
+                ContextMenu mm = BuildItemMenu(en);
+                mm.PlacementTarget = cap;
+                cap.ContextMenu = mm;
+                mm.IsOpen = true;
+            }; // 名称右键 = 图标右键，统一操作（打开时重建）
             en.Caption = cap;
 
             StackPanel host = new StackPanel();
@@ -1120,9 +1131,8 @@ namespace Koi
             if (vt > vis.Count - 1) vt = vis.Count - 1;
             if (vt != vi)
             {
-                // 从可见序列移除自身后，vt 即目标槽位上的锚点可见项
+                // 锚点 = 目标最终插入位置上的可见项（vt 按移除自身后的序列计算，右移不减一）
                 vis.RemoveAt(vi);
-                if (vt > vi) vt--;
                 DockEntry anchor = vt < vis.Count ? vis[vt] : null;
 
                 entries.Remove(src);
