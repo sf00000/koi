@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.4.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.4.1.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.4.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.4.1"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -966,16 +966,26 @@ namespace Koi
         // 复制条目的绝对路径到剪贴板（.lnk 复制原链接路径；Store 应用为其 shell: 形式）
         void CopyLocation(ItemCfg c)
         {
-            try
+            // 剪贴板是系统级单例，输入法/剪贴板工具/截图软件会短暂占用它，
+            // 单次 SetText 常遇到 CLIPBRD_E_CANT_OPEN——小间隔重试即可拿到
+            const int tries = 10;
+            for (int attempt = 1; attempt <= tries; attempt++)
             {
-                Clipboard.SetText(c.Path);
-            }
-            catch
-            {
-                try { Clipboard.Clear(); Clipboard.SetText(c.Path); } // 剪贴板被占用时清空重试
+                try
+                {
+                    Clipboard.SetText(c.Path);
+                    return; // 写入成功
+                }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, "复制失败（剪贴板可能被其他程序占用）：" + ex.Message, "Koi");
+                    if (attempt == tries)
+                    {
+                        MessageBox.Show(this,
+                            "复制失败：剪贴板被其他程序持续占用，已重试 " + tries + " 次。\n" + ex.Message,
+                            "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+                    Thread.Sleep(60);
                 }
             }
         }
