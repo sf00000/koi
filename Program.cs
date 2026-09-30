@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.4.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.4.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.5.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.5.0.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.4.5"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.5.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -202,6 +202,7 @@ namespace Koi
                 m.Items.Add(Mi("通过路径添加…", delegate { AddByPath(); }));
                 m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
                 m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
+                m.Items.Add(Mi("添加文件…", delegate { BrowseAddFile(); }));
                 m.PlacementTarget = plus;
                 m.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
                 m.IsOpen = true;
@@ -1323,6 +1324,27 @@ namespace Koi
             OpenFileDialog dlg = new OpenFileDialog();
             dlg.Title = "选择程序或快捷方式";
             dlg.Filter = "程序/快捷方式|*.exe;*.lnk;*.url;*.bat;*.cmd|所有文件|*.*";
+            dlg.Multiselect = true;
+            if (dlg.ShowDialog(this) == true)
+            {
+                foreach (string f in dlg.FileNames)
+                {
+                    if (WarnIfDuplicate(f)) continue;
+                    ItemCfg c = new ItemCfg();
+                    c.Path = f;
+                    c.Name = PrettyName(f);
+                    AddEntry(c, true);
+                }
+            }
+        }
+
+        // 添加普通文件（文档等）：点击时用系统关联程序打开（同资源管理器双击）
+        void BrowseAddFile()
+        {
+            OpenFileDialog dlg = new OpenFileDialog();
+            dlg.Title = "选择文件（点击图标时用默认程序打开）";
+            dlg.Filter =
+                "常用文档|*.doc;*.docx;*.xls;*.xlsx;*.ppt;*.pptx;*.pdf;*.txt;*.md;*.csv;*.one;*.xmind|所有文件|*.*";
             dlg.Multiselect = true;
             if (dlg.ShowDialog(this) == true)
             {
