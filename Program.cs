@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.7.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.7.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.8.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.8.0.0")]
 
 namespace Koi
 {
@@ -43,6 +43,13 @@ namespace Koi
         public string Path;
         public string Icon; // 可选：自定义图标文件（png/jpg/ico），如 Store 应用无法自动取图标时使用
         public List<string> Stack; // 文件堆叠：非空且 ≥2 时该条目是"文件堆"，Path 为最上层文件
+        public string Group;       // 所属分组（空 = 未分组，仅显示在"全部"视图）
+    }
+
+    public class WorkflowCfg
+    {
+        public string Name;
+        public List<string> Paths = new List<string>(); // 逐行：文件夹/程序/文件/网址，一键依次打开
     }
 
     public class Config
@@ -56,6 +63,9 @@ namespace Koi
         public bool ShowNames = true;          // 图标下方常显名称（旧配置缺省视为 true）
         [XmlIgnore]
         public bool ShowNamesSpecified;        // XmlSerializer 开关：旧配置无此字段时保持 false
+        public string CurrentGroup = "全部";   // 当前显示的分组
+        public List<string> Recent = new List<string>();               // 最近打开（新→旧，最多 8 条）
+        public List<WorkflowCfg> Workflows = new List<WorkflowCfg>(); // 一键打开的工作组合
         public List<ItemCfg> Items = new List<ItemCfg>();
     }
 
@@ -77,7 +87,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.7.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.8.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -147,6 +157,7 @@ namespace Koi
                 }
                 // 按窗口实际所在显示器的工作区精确约束（避免多屏排列空隙、换分辨率后出界）
                 OnWindowSizeChanged();
+                ApplyGroupVisibility(); // 恢复上次使用的分组视图
             };
         }
 
@@ -302,10 +313,24 @@ namespace Koi
             img.MouseEnter += delegate
             {
                 if (IsStack(en)) { ShowStackPopup(en); return; } // 文件堆：悬停弹出文件选择列表
+                bool isFolder = false;
+                try { isFolder = Directory.Exists(en.Cfg.Path); } catch { }
+                if (isFolder) { ShowFolderFlyout(en); return; }  // 文件夹：悬停就地展开子目录与最近文件
                 hoveredEntry = en;
                 ShowNameLabel(en);
             };
-            img.MouseLeave += delegate { if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; } };
+            img.MouseLeave += delegate
+            {
+                if (hoveredEntry == en) { hoveredEntry = null; nameLabel.Visibility = Visibility.Collapsed; }
+                // 离开文件夹图标且未进入弹层：1.6 秒后自动收起
+                bool wasFolder = false;
+                try { wasFolder = Directory.Exists(en.Cfg.Path); } catch { }
+                if (wasFolder && folderFlyoutCloseTimer != null)
+                {
+                    folderFlyoutCloseTimer.Stop();
+                    folderFlyoutCloseTimer.Start();
+                }
+            };
             img.MouseLeftButtonUp += delegate
             {
                 bool wasDrag = dragStarted;
@@ -490,6 +515,138 @@ namespace Koi
         }
 
         // 拆开文件堆：原地还原为独立条目
+        // 文件夹悬停就地展开：子目录 + 最近修改的文件 + 终端/编辑器直达
+        DispatcherTimer folderFlyoutCloseTimer;
+
+        void ShowFolderFlyout(DockEntry en)
+        {
+            if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
+            string dir = en.Cfg.Path;
+
+            StackPanel listPanel = new StackPanel { MinWidth = 260 };
+
+            // 头部动作：打开文件夹 / 在此打开终端 / 用 Cursor 打开
+            listPanel.Children.Add(FlyoutRow("📂 打开文件夹", delegate { RunPath(dir); }));
+            listPanel.Children.Add(FlyoutRow("⌨ 在此打开终端", delegate { OpenTerminalAt(dir); }));
+            if (CursorAvailable())
+                listPanel.Children.Add(FlyoutRow("✎ 用 Cursor 打开", delegate { OpenCursorAt(dir); }));
+            listPanel.Children.Add(new System.Windows.Shapes.Rectangle
+            {
+                Height = 1,
+                Fill = new SolidColorBrush(Color.FromArgb(0x30, 0xFF, 0xFF, 0xFF)),
+                Margin = new Thickness(4, 4, 4, 4)
+            });
+
+            // 子目录
+            try
+            {
+                List<string> dirs = new List<string>(Directory.GetDirectories(dir));
+                dirs.Sort(StringComparer.OrdinalIgnoreCase);
+                foreach (string d in dirs)
+                {
+                    string captured = d;
+                    listPanel.Children.Add(FlyoutRow("📁 " + PrettyName(d), delegate
+                    {
+                        CloseFolderFlyout();
+                        Process.Start("explorer.exe", "\"" + captured + "\"");
+                    }));
+                }
+            }
+            catch { }
+
+            // 最近修改的文件（最多 6 个）
+            try
+            {
+                List<FileInfo> files = new List<FileInfo>();
+                foreach (string f in Directory.GetFiles(dir))
+                {
+                    try { files.Add(new FileInfo(f)); } catch { }
+                }
+                files.Sort(delegate(FileInfo a, FileInfo b) { return b.LastWriteTime.CompareTo(a.LastWriteTime); });
+                int shown = 0;
+                foreach (FileInfo fi in files)
+                {
+                    if (shown >= 6) break;
+                    FileInfo capturedF = fi;
+                    listPanel.Children.Add(FlyoutRow("📄 " + PrettyName(fi.FullName), delegate
+                    {
+                        CloseFolderFlyout();
+                        Launch(new ItemCfg { Path = capturedF.FullName, Name = PrettyName(capturedF.FullName) });
+                    }));
+                    shown++;
+                }
+            }
+            catch { }
+
+            ScrollViewer sv = new ScrollViewer
+            {
+                Content = listPanel,
+                MaxHeight = 380,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+            };
+            Border bd = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0xF2, 0x20, 0x23, 0x28)),
+                BorderBrush = normalBorder,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(6),
+                Child = sv
+            };
+            System.Windows.Controls.Primitives.Popup popup = new System.Windows.Controls.Primitives.Popup
+            {
+                PlacementTarget = en.Host,
+                Placement = System.Windows.Controls.Primitives.PlacementMode.Top,
+                VerticalOffset = -6,
+                StaysOpen = false,
+                AllowsTransparency = true,
+                Child = bd
+            };
+            popup.MouseEnter += delegate { if (folderFlyoutCloseTimer != null) folderFlyoutCloseTimer.Stop(); };
+            popup.MouseLeave += delegate { CloseFolderFlyout(); };
+            bd.MouseEnter += delegate { if (folderFlyoutCloseTimer != null) folderFlyoutCloseTimer.Stop(); };
+            if (folderFlyoutCloseTimer == null)
+            {
+                folderFlyoutCloseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1600) };
+                folderFlyoutCloseTimer.Tick += delegate
+                {
+                    folderFlyoutCloseTimer.Stop();
+                    CloseFolderFlyout();
+                };
+            }
+            stackPopup = popup; // 复用同一管理字段：新弹层会顶掉旧弹层
+            popup.IsOpen = true;
+        }
+
+        Border FlyoutRow(string text, System.Action onClick)
+        {
+            Border rowB = new Border
+            {
+                Padding = new Thickness(8, 5, 10, 5),
+                CornerRadius = new CornerRadius(6),
+                Background = Brushes.Transparent,
+                Cursor = Cursors.Hand
+            };
+            TextBlock t = new TextBlock
+            {
+                Text = text,
+                FontSize = 12.5,
+                Foreground = new SolidColorBrush(Color.FromArgb(0xEE, 0xE8, 0xEA, 0xED)),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            rowB.Child = t;
+            rowB.MouseEnter += delegate { rowB.Background = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)); };
+            rowB.MouseLeave += delegate { rowB.Background = Brushes.Transparent; };
+            rowB.MouseLeftButtonUp += delegate { onClick(); };
+            return rowB;
+        }
+
+        void CloseFolderFlyout()
+        {
+            if (folderFlyoutCloseTimer != null) folderFlyoutCloseTimer.Stop();
+            if (stackPopup != null) { stackPopup.IsOpen = false; stackPopup = null; }
+        }
+
         void Unstack(DockEntry en)
         {
             List<string> paths = en.Cfg.Stack;
@@ -643,6 +800,18 @@ namespace Koi
             m.Items.Add(Mi("打开", delegate { Launch(en.Cfg); }));
             m.Items.Add(Mi("打开文件位置", delegate { OpenLocation(en.Cfg); }));
             m.Items.Add(Mi("复制文件位置", delegate { CopyLocation(en.Cfg); }));
+
+            // 文件夹专属：以该目录为工作目录打开终端 / Cursor
+            bool isDir = false;
+            try { isDir = Directory.Exists(en.Cfg.Path); } catch { }
+            if (isDir)
+            {
+                string dir = en.Cfg.Path;
+                m.Items.Add(Mi("在此打开终端", delegate { OpenTerminalAt(dir); }));
+                if (CursorAvailable())
+                    m.Items.Add(Mi("用 Cursor 打开此目录", delegate { OpenCursorAt(dir); }));
+            }
+
             m.Items.Add(new Separator());
             MenuItem kill = Mi("强制结束进程（卡死时用）", delegate { KillApp(en.Cfg); });
             string ext = null;
@@ -651,6 +820,43 @@ namespace Koi
                 (ext.Equals(".exe", StringComparison.OrdinalIgnoreCase) ||
                  ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase)); // 仅 exe/lnk 支持进程匹配
             m.Items.Add(kill);
+            m.Items.Add(new Separator());
+
+            // 移动到分组：控制该条目在哪个分组视图显示
+            MenuItem grp = new MenuItem { Header = "移动到分组" };
+            MenuItem gAll = Mi("未分组（所有视图显示）", delegate
+            {
+                en.Cfg.Group = null;
+                ApplyGroupVisibility();
+                ScheduleSave();
+            });
+            gAll.IsChecked = string.IsNullOrEmpty(en.Cfg.Group);
+            grp.Items.Add(gAll);
+            foreach (string gname in ExistingGroups())
+            {
+                if (gname == en.Cfg.Group) continue;
+                string captured = gname;
+                MenuItem gi = Mi(captured, delegate
+                {
+                    en.Cfg.Group = captured;
+                    ApplyGroupVisibility();
+                    ScheduleSave();
+                });
+                gi.IsChecked = en.Cfg.Group == captured;
+                grp.Items.Add(gi);
+            }
+            grp.Items.Add(new Separator());
+            grp.Items.Add(Mi("新建分组并移入…", delegate
+            {
+                string gname = VB.Interaction.InputBox("分组名称（如：开发、论文、日常）：", "新建分组", "", -1, -1);
+                if (string.IsNullOrEmpty(gname = gname.Trim())) return;
+                en.Cfg.Group = gname;
+                if (cfg.CurrentGroup != "全部" && cfg.CurrentGroup != gname) cfg.CurrentGroup = gname;
+                ApplyGroupVisibility();
+                ScheduleSave();
+            }));
+            m.Items.Add(grp);
+
             m.Items.Add(new Separator());
             m.Items.Add(Mi("重命名…", delegate { Rename(en); }));
             m.Items.Add(Mi("从 Dock 移除", delegate { Remove(en); }));
@@ -663,6 +869,100 @@ namespace Koi
             MenuItem ver = Mi("Koi 锦鲤坞 v" + AppVersion, null);
             ver.IsEnabled = false;
             m.Items.Add(ver);
+            m.Items.Add(new Separator());
+
+            // 最近打开（新→旧，最多 8 条）
+            MenuItem recent = new MenuItem { Header = "最近打开" };
+            if (cfg.Recent.Count == 0)
+            {
+                MenuItem none = Mi("（暂无）", null);
+                none.IsEnabled = false;
+                recent.Items.Add(none);
+            }
+            else
+            {
+                foreach (string r in cfg.Recent)
+                {
+                    string captured = r;
+                    recent.Items.Add(Mi(PrettyName(r), delegate { RunPath(captured); }));
+                }
+            }
+            m.Items.Add(recent);
+
+            // 分组：只显示当前组的相关入口（顺序位置原样保留）
+            MenuItem groups = new MenuItem { Header = "分组" };
+            List<string> allList = new List<string> { "全部" };
+            allList.AddRange(ExistingGroups());
+            string[] all = allList.ToArray();
+            foreach (string gname in all)
+            {
+                string g = gname;
+                MenuItem gi = Mi(g, delegate
+                {
+                    cfg.CurrentGroup = g;
+                    ApplyGroupVisibility();
+                    ScheduleSave();
+                });
+                gi.IsCheckable = true;
+                gi.IsChecked = cfg.CurrentGroup == g;
+                groups.Items.Add(gi);
+            }
+            if (groups.Items.Count == 1)
+            {
+                MenuItem hint = Mi("（右键图标 → 移动到分组）", null);
+                hint.IsEnabled = false;
+                groups.Items.Add(hint);
+            }
+            m.Items.Add(groups);
+
+            // 工作组合：一键依次打开一组目录/程序/网址
+            MenuItem work = new MenuItem { Header = "工作组合" };
+            if (cfg.Workflows.Count == 0)
+            {
+                MenuItem none2 = Mi("（暂无，可新建）", null);
+                none2.IsEnabled = false;
+                work.Items.Add(none2);
+            }
+            else
+            {
+                foreach (WorkflowCfg wf in cfg.Workflows)
+                {
+                    WorkflowCfg captured = wf;
+                    work.Items.Add(Mi("▶ " + wf.Name, delegate
+                    {
+                        foreach (string p in captured.Paths) RunPath(p);
+                    }));
+                }
+            }
+            work.Items.Add(new Separator());
+            work.Items.Add(Mi("新建工作组合…", delegate
+            {
+                string wfName = VB.Interaction.InputBox("工作组合名称（如：开发、论文、日常）：", "新建工作组合", "", -1, -1);
+                if (string.IsNullOrEmpty(wfName = wfName.Trim())) return;
+                string[] lines = ShowLinesInput("工作组合：" + wfName,
+                    "每行一个路径（文件夹 / 程序 / 文件 / 网址），确定后保存：");
+                if (lines == null) return;
+                WorkflowCfg wf = new WorkflowCfg { Name = wfName };
+                wf.Paths.AddRange(lines);
+                cfg.Workflows.Add(wf);
+                ScheduleSave();
+            }));
+            if (cfg.Workflows.Count > 0)
+            {
+                MenuItem del = new MenuItem { Header = "删除工作组合…" };
+                foreach (WorkflowCfg wf in cfg.Workflows.ToArray())
+                {
+                    WorkflowCfg captured = wf;
+                    del.Items.Add(Mi("删除 " + wf.Name, delegate
+                    {
+                        cfg.Workflows.Remove(captured);
+                        ScheduleSave();
+                    }));
+                }
+                work.Items.Add(del);
+            }
+            m.Items.Add(work);
+
             m.Items.Add(new Separator());
             m.Items.Add(Mi("添加程序…", delegate { BrowseAdd(); }));
             m.Items.Add(Mi("添加文件夹…", delegate { BrowseAddFolder(); }));
@@ -995,23 +1295,33 @@ namespace Koi
         {
             try
             {
-                int n = entries.Count;
-                if (n == 0 || dragStarted) return;
+                int n = 0;
                 double hostW = 0;
                 foreach (DockEntry en in entries)
+                {
+                    if (en.Host.Visibility != Visibility.Visible) continue; // 隐藏的分组项不占宽
+                    n++;
                     hostW = Math.Max(hostW, en.Host.ActualWidth);
-                if (hostW <= 0) return; // 尚未布局，等 SizeChanged 再来
+                }
+                if (n == 0 || hostW <= 0) return; // 尚未布局，等 SizeChanged 再来
                 double avail = MaxDockWidth() - (PlusWidth() + 10) - 12 - 24; // 扣除＋按钮区/边距/安全余量
                 double mMin = 4;
                 double mMax = Math.Max(12, Math.Round(IconSizePx() * 0.6));
                 double m = (avail - n * hostW) / (2 * n);
                 m = Math.Max(mMin, Math.Min(mMax, Math.Round(m)));
-                if (Math.Abs(entries[0].Host.Margin.Left - m) < 0.5) return; // 无变化不折腾
+                DockEntry firstVisible = null;
+                foreach (DockEntry en in entries)
+                    if (en.Host.Visibility == Visibility.Visible) { firstVisible = en; break; }
+                if (firstVisible == null) return;
+                if (Math.Abs(firstVisible.Host.Margin.Left - m) < 0.5) return; // 无变化不折腾
                 fitting = true;
                 try
                 {
                     foreach (DockEntry en in entries)
+                    {
+                        if (en.Host.Visibility != Visibility.Visible) continue;
                         en.Host.Margin = new Thickness(m, 0, m, 0);
+                    }
                     UpdateLayout();
                 }
                 finally { fitting = false; }
@@ -1111,6 +1421,7 @@ namespace Koi
 
         void Launch(ItemCfg c)
         {
+            AddRecent(c.Path); // 记录最近访问（无论启动还是聚焦）
             if (TryActivateRunning(c.Path)) return; // 已在运行：聚焦已有窗口，不重复启动
             try
             {
@@ -1120,6 +1431,141 @@ namespace Koi
             {
                 MessageBox.Show(this, "无法启动「" + c.Name + "」：" + ex.Message, "Koi");
             }
+        }
+
+        // ---------------- 最近访问 / 分组 / 工作组合 ----------------
+
+        void AddRecent(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || path.StartsWith("shell:")) return;
+                string key = NormalizePathKey(path);
+                cfg.Recent.RemoveAll(delegate(string r) { return NormalizePathKey(r) == key; });
+                cfg.Recent.Insert(0, path);
+                while (cfg.Recent.Count > 8) cfg.Recent.RemoveAt(cfg.Recent.Count - 1);
+                ScheduleSave();
+            }
+            catch { }
+        }
+
+        // 按当前分组切换各条目可见性（顺序与位置原样保留）
+        void ApplyGroupVisibility()
+        {
+            foreach (DockEntry en in entries)
+            {
+                bool show = cfg.CurrentGroup == "全部" || en.Cfg.Group == cfg.CurrentGroup;
+                en.Host.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            }
+            UpdateAutoSpacing();
+            ClampToScreen();
+        }
+
+        // 当前 Dock 中实际出现的分组名（去重）
+        List<string> ExistingGroups()
+        {
+            List<string> g = new List<string>();
+            foreach (DockEntry en in entries)
+            {
+                string gr = en.Cfg.Group;
+                if (!string.IsNullOrEmpty(gr) && !g.Contains(gr)) g.Add(gr);
+            }
+            return g;
+        }
+
+        static readonly string CursorExePath =
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData) + "\\Programs\\cursor\\Cursor.exe";
+
+        static bool CursorAvailable()
+        {
+            try { return File.Exists(CursorExePath); } catch { return false; }
+        }
+
+        // 在指定目录打开终端：优先 Windows Terminal，回退 PowerShell
+        static void OpenTerminalAt(string dir)
+        {
+            try
+            {
+                string wt = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Microsoft\\WindowsApps\\wt.exe");
+                if (File.Exists(wt))
+                {
+                    Process.Start(new ProcessStartInfo(wt, "-d \"" + dir + "\"") { UseShellExecute = true });
+                    return;
+                }
+            }
+            catch { }
+            try
+            {
+                Process.Start(new ProcessStartInfo(
+                    "powershell.exe",
+                    "-NoExit -Command \"Set-Location -LiteralPath '" + dir + "'\"")
+                { UseShellExecute = true });
+            }
+            catch { }
+        }
+
+        static void OpenCursorAt(string dir)
+        {
+            try
+            {
+                if (CursorAvailable())
+                    Process.Start(new ProcessStartInfo(CursorExePath, "\"" + dir + "\"") { UseShellExecute = true });
+            }
+            catch { }
+        }
+
+        // 通用打开：网址走默认浏览器、目录走资源管理器、其余走系统关联
+        static void RunPath(string p)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(p)) return;
+                if (Directory.Exists(p)) { Process.Start("explorer.exe", "\"" + p + "\""); return; }
+                Process.Start(new ProcessStartInfo(p) { UseShellExecute = true });
+            }
+            catch (Exception ex) { AppendErrorLog("工作组合打开失败 " + p + "：" + ex.Message); }
+        }
+
+        // 多行输入框（工作组合用）：确定返回各行数组，取消返回 null
+        string[] ShowLinesInput(string title, string label)
+        {
+            Window w = new Window();
+            w.Title = title;
+            w.Owner = this;
+            w.Width = 560;
+            w.SizeToContent = SizeToContent.Height;
+            w.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            StackPanel sp = new StackPanel { Margin = new Thickness(16) };
+            TextBlock lb = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+            TextBox tb = new TextBox { AcceptsReturn = true, Height = 140, FontSize = 12.5, TextWrapping = TextWrapping.NoWrap };
+            StackPanel btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 10, 0, 0) };
+            string[] result = null;
+            Button ok = new Button { Content = "确定", Width = 80, Margin = new Thickness(0, 0, 8, 0) };
+            Button cancel = new Button { Content = "取消", Width = 80 };
+            ok.Click += delegate
+            {
+                result = tb.Text.Split('\n');
+                List<string> clean = new List<string>();
+                foreach (string line in result)
+                {
+                    string s = line.Trim().Trim('"');
+                    if (s.Length > 0) clean.Add(s);
+                }
+                result = clean.Count > 0 ? clean.ToArray() : null;
+                w.DialogResult = true;
+                w.Close();
+            };
+            cancel.Click += delegate { w.DialogResult = false; w.Close(); };
+            btns.Children.Add(ok);
+            btns.Children.Add(cancel);
+            sp.Children.Add(lb);
+            sp.Children.Add(tb);
+            sp.Children.Add(btns);
+            w.Content = sp;
+            bool? ok2 = w.ShowDialog();
+            return (ok2 == true) ? result : null;
         }
 
         // 点击时若目标程序已在运行，激活它的主窗口（Mac Dock 行为）。
