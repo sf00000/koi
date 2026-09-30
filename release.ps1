@@ -58,9 +58,17 @@ if ($LASTEXITCODE -ne 0) { throw "git push 失败，发版中止（本地 commit
 git push origin "v$new"
 if ($LASTEXITCODE -ne 0) { throw "推送 tag 失败，发版中止" }
 
-# 5) 创建 GitHub Release 并附上 exe
-gh release create "v$new" "$repo\Koi.exe" --title "v$new" --generate-notes
-if ($LASTEXITCODE -ne 0) { throw "GitHub Release 创建失败（tag 已推送，可手动到 Releases 页面补建）" }
+# 5) 创建 GitHub Release 并附上 exe（失败重试 3 次；仍失败只告警不中止——tag 已在远端，可稍后补建。Koi 必须重启）
+$relOk = $false
+for ($i = 1; $i -le 3; $i++) {
+    gh release create "v$new" "$repo\Koi.exe" --title "v$new" --generate-notes
+    if ($LASTEXITCODE -eq 0) { $relOk = $true; break }
+    Write-Host "GitHub Release 创建失败（第 $i 次），15 秒后重试..."
+    Start-Sleep -Seconds 15
+}
+if (-not $relOk) {
+    Write-Host "警告：GitHub Release 未能创建（tag v$new 已推送，可到 Releases 页面手动补建并上传 Koi.exe）。"
+}
 
 Write-Host "Release v$new 发布完成，启动 Koi..."
 Start-Process "$repo\Koi.exe"
