@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.2.0.0")]
 
 namespace Koi
 {
@@ -69,7 +69,7 @@ namespace Koi
 
     public class DockWindow : Window
     {
-        internal const string AppVersion = "1.1.0"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.2.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -350,6 +350,8 @@ namespace Koi
             ContextMenu m = new ContextMenu();
             m.Items.Add(Mi("打开", delegate { Launch(en.Cfg); }));
             m.Items.Add(Mi("打开文件位置", delegate { OpenLocation(en.Cfg); }));
+            m.Items.Add(new Separator());
+            m.Items.Add(Mi("强制结束进程（卡死时用）", delegate { KillApp(en.Cfg); }));
             m.Items.Add(new Separator());
             m.Items.Add(Mi("重命名…", delegate { Rename(en); }));
             m.Items.Add(Mi("从 Dock 移除", delegate { Remove(en); }));
@@ -814,26 +816,22 @@ namespace Koi
             "doubao",
         };
 
-        bool TryActivateRunning(string path)
+        // 收集某配置路径对应应用的全部进程 Id：
+        // 精确匹配进程 exe 与配置路径；已知"启动器外壳 + 子目录真身"布局的应用
+        // （见 LauncherApps，如豆包）额外匹配配置 exe 所在目录内的进程。
+        HashSet<int> FindAppProcessIds(string path)
         {
+            HashSet<int> pids = new HashSet<int>();
             try
             {
-                if (string.IsNullOrEmpty(path)) return false;
-                if (string.Compare(Path.GetExtension(path), ".exe", true) != 0) return false;
                 string name = Path.GetFileNameWithoutExtension(path);
-                if (string.IsNullOrEmpty(name)) return false;
-
-                // 精确匹配：进程 exe 与配置路径一致。
-                // 已知"启动器外壳 + 子目录真身"布局的应用（见 LauncherApps）额外允许
-                // 配置 exe 所在目录内的进程；普通程序不做目录放宽，
-                // 避免点击 C:\Tools\Editor.exe 激活 C:\Tools\Old\Editor.exe。
+                if (string.IsNullOrEmpty(name)) return pids;
                 string baseDir = null;
                 bool allowDirTree = LauncherApps.Contains(name);
                 if (allowDirTree)
                 {
                     try { baseDir = Path.GetDirectoryName(path.Trim()); } catch { }
                 }
-                HashSet<int> pids = new HashSet<int>();
                 foreach (Process p in Process.GetProcessesByName(name))
                 {
                     using (p)
@@ -856,6 +854,18 @@ namespace Koi
                         catch { } // 权限不足拿不到路径的进程不参与匹配
                     }
                 }
+            }
+            catch { }
+            return pids;
+        }
+
+        bool TryActivateRunning(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path)) return false;
+                if (string.Compare(Path.GetExtension(path), ".exe", true) != 0) return false;
+                HashSet<int> pids = FindAppProcessIds(path);
                 if (pids.Count == 0) return false;
 
                 // 枚举该进程组的顶层窗口，挑"有标题且足够大"的真界面。
@@ -903,6 +913,65 @@ namespace Koi
         {
             try { Process.Start("explorer.exe", "/select,\"" + c.Path + "\""); }
             catch { }
+        }
+
+        // 强制结束应用的全部进程（程序卡死时用）：
+        // 先 CloseMainWindow 优雅关闭给 2 秒保存机会，仍未退出的再 Kill。
+        void KillApp(ItemCfg c)
+        {
+            MessageBoxResult r = MessageBox.Show(this,
+                "强制结束「" + c.Name + "」的全部进程？\n未保存的数据将会丢失。",
+                "Koi", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+            if (r != MessageBoxResult.OK) return;
+
+            HashSet<int> pids = FindAppProcessIds(c.Path);
+            if (pids.Count == 0)
+            {
+                MessageBox.Show(this, "「" + c.Name + "」当前没有正在运行的进程。", "Koi");
+                return;
+            }
+            int total = pids.Count;
+
+            List<Process> alive = new List<Process>();
+            foreach (int id in pids)
+            {
+                try { Process p = Process.GetProcessById(id); if (p != null && !p.HasExited) alive.Add(p); }
+                catch { }
+            }
+
+            // 第一阶段：优雅关闭
+            foreach (Process p in alive)
+            {
+                try { p.CloseMainWindow(); } catch { }
+            }
+            DateTime deadline = DateTime.UtcNow.AddSeconds(2);
+            while (DateTime.UtcNow < deadline)
+            {
+                alive.RemoveAll(delegate(Process p) { try { return p.HasExited; } catch { return true; } });
+                if (alive.Count == 0) break;
+                Thread.Sleep(100);
+            }
+
+            // 第二阶段：强杀残余
+            foreach (Process p in alive)
+            {
+                try { if (!p.HasExited) p.Kill(); } catch { }
+            }
+            deadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < deadline)
+            {
+                alive.RemoveAll(delegate(Process p) { try { return p.HasExited; } catch { return true; } });
+                if (alive.Count == 0) break;
+                Thread.Sleep(100);
+            }
+            foreach (Process p in alive) try { p.Dispose(); } catch { }
+
+            if (alive.Count == 0)
+                MessageBox.Show(this, "已结束「" + c.Name + "」的 " + total + " 个进程。", "Koi");
+            else
+                MessageBox.Show(this,
+                    "「" + c.Name + "」仍有 " + alive.Count + " 个进程未能结束（可能需要管理员权限）。",
+                    "Koi", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
 
         void Rename(DockEntry en)
