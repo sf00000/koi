@@ -5,7 +5,7 @@
 //  - 图标悬停时像 Mac 一样放大（鱼眼效果）
 //  - 滚轮直接调节图标大小（32~112px），Ctrl+滚轮调节背景透明度（25%~100%）
 //  - 拖拽 .exe / 快捷方式 / 文件夹到 Dock 上即可添加
-//  - 右键图标：打开 / 打开文件位置 / 重命名 / 移除
+//  - 右键图标：打开 / 打开文件位置 / 复制文件位置 / 强制结束进程 / 重命名 / 移除
 //  - 右键背景：添加程序 / 调整图标 / 总在最前 / 开机自启 / 退出
 //  - 位置、大小、项目列表保存在 %APPDATA%\Koi\config.xml
 //  编译（系统自带 .NET Framework，无需安装任何东西）：
@@ -32,8 +32,8 @@ using WinForms = System.Windows.Forms;
 using Microsoft.Win32;
 using VB = Microsoft.VisualBasic;
 
-[assembly: System.Reflection.AssemblyVersion("1.2.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.2.3.0")]
+[assembly: System.Reflection.AssemblyVersion("1.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.0.0")]
 
 namespace Koi
 {
@@ -73,7 +73,7 @@ namespace Koi
         // 顶部留白必须用同一常量计算（留白 ≥ FisheyeAmp×图标高），否则放大后图标会被视口裁掉
         internal const double FisheyeAmp = 0.9;
 
-        internal const string AppVersion = "1.2.3"; // 发布时由 release.ps1 自动递增
+        internal const string AppVersion = "1.3.0"; // 发布时由 release.ps1 自动递增
 
         static readonly string ConfigDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Koi");
@@ -360,6 +360,7 @@ namespace Koi
             ContextMenu m = new ContextMenu();
             m.Items.Add(Mi("打开", delegate { Launch(en.Cfg); }));
             m.Items.Add(Mi("打开文件位置", delegate { OpenLocation(en.Cfg); }));
+            m.Items.Add(Mi("复制文件位置", delegate { CopyLocation(en.Cfg); }));
             m.Items.Add(new Separator());
             MenuItem kill = Mi("强制结束进程（卡死时用）", delegate { KillApp(en.Cfg); });
             string ext = null;
@@ -959,6 +960,23 @@ namespace Koi
         {
             try { Process.Start("explorer.exe", "/select,\"" + c.Path + "\""); }
             catch { }
+        }
+
+        // 复制条目的绝对路径到剪贴板（.lnk 复制原链接路径；Store 应用为其 shell: 形式）
+        void CopyLocation(ItemCfg c)
+        {
+            try
+            {
+                Clipboard.SetText(c.Path);
+            }
+            catch
+            {
+                try { Clipboard.Clear(); Clipboard.SetText(c.Path); } // 剪贴板被占用时清空重试
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "复制失败（剪贴板可能被其他程序占用）：" + ex.Message, "Koi");
+                }
+            }
         }
 
         // 强制结束应用的全部进程（程序卡死时用）：
