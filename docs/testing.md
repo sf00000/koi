@@ -41,6 +41,18 @@ GitHub Actions 使用 `windows-latest` 跑上述测试，解析 PowerShell 脚�
 
 当前没有固定硬件的基准报告。不要用“立即释放内存”后的工作集数字代表稳定运行成本；网络文件系统调用也无法保证在取消时立即返回。
 
+## 正式发布
+
+发布需要 Windows、Git、已登录的 GitHub CLI、仓库写权限，以及干净且跟踪 `origin` 分支的工作区。
+
+```powershell
+powershell -NoProfile -File .\release.ps1          # 补丁版本 +1
+powershell -NoProfile -File .\release.ps1 minor    # 次版本 +1
+powershell -NoProfile -File .\release.ps1 major    # 主版本 +1
+```
+
+版本由 `VERSION`、`Program.cs` 的程序集版本和 `DockWindow.cs` 的菜单版本共同记录。未发布改动写入 [CHANGELOG.md](../CHANGELOG.md) 的 Unreleased；只有正式发版才递增版本。普通构建不会更新根目录的已发布 EXE，也不会创建 GitHub Release。
+
 ## 发布失败恢复
 
 `release.ps1` 必须从干净的、已提交且跟踪 `origin` 分支的 checkout 执行。测试和版本修改发生在临时 clone 中；只提交 `VERSION`、`Program.cs`、`DockWindow.cs`、`Koi.exe`、`Koi.exe.sha256`。脚本不使用 `git add -A`，不自动 reset、强推或删除远端 ref。
