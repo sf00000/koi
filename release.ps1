@@ -1,74 +1,239 @@
-﻿# Koi 一键发版脚本
-# 用法:
-#   powershell -File release.ps1            # 递增补丁位 1.0.0 -> 1.0.1
-#   powershell -File release.ps1 minor      # 递增次位   1.0.0 -> 1.1.0 (新功能)
-#   powershell -File release.ps1 major      # 递增主位   1.0.0 -> 2.0.0 (大改版)
-# 步骤: 递增版本号 -> 同步 VERSION/Program.cs -> 编译 -> 提交 -> 打 tag -> 推送 -> 创建 GitHub Release(附 exe)
-param([string]$Bump = "patch")
+[CmdletBinding()]
+param(
+    [ValidateSet('patch', 'minor', 'major')][string]$Bump = 'patch',
+    [switch]$NonInteractive
+)
 $ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 2.0
 
-$repo = Split-Path -Parent $PSCommandPath
-if (-not $repo) { $repo = 'G:\workbuddy\Koi' } # 兜底：极少数宿主取不到脚本路径
-Set-Location $repo
-
-# 1) 读取并递增版本号
-$cur = (Get-Content "$repo\VERSION" -Raw).Trim()
-$parts = $cur.Split('.')
-if ($parts.Count -ne 3) { throw "VERSION 内容非法: $cur" }
-$major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
-switch ($Bump) {
-  "major" { $major++; $minor = 0; $patch = 0 }
-  "minor" { $minor++; $patch = 0 }
-  "patch" { $patch++ }
-  default { throw "Bump 只支持 patch/minor/major" }
+# All release edits and the release commit live in a temporary clone. The user's
+# checkout and running application are untouched until the remote release is complete.
+function Invoke-Git {
+    param([string[]]$Arguments)
+    $output = & $script:git @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "git $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
+    return $output
 }
-$new = "$major.$minor.$patch"
-Write-Host "版本: $cur -> $new"
-
-# 2) 同步版本号到 VERSION 与 Program.cs（显式 UTF-8 读写，防止中文注释被 ANSI 误读损坏）
-Set-Content "$repo\VERSION" "$new`n" -Encoding ASCII
-$cs = "$repo\Program.cs"
-$utf8 = New-Object System.Text.UTF8Encoding($false)
-$src = [IO.File]::ReadAllText($cs, $utf8)
-$src = $src -replace 'AppVersion = "[0-9.]+"', "AppVersion = `"$new`""
-$src = $src -replace 'AssemblyVersion\("[0-9.]+"\)', "AssemblyVersion(`"$new.0`")"
-$src = $src -replace 'AssemblyFileVersion\("[0-9.]+"\)', "AssemblyFileVersion(`"$new.0`")"
-[IO.File]::WriteAllText($cs, $src, $utf8)
-
-# 3) 编译（停止运行中的 Koi 释放 exe）
-try { Stop-Process -Name Koi -Force -ErrorAction Stop; Start-Sleep 1 } catch {}
-$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-& $csc -nologo -target:winexe -out:"$repo\Koi.exe" `
-  -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll `
-  -r:System.Windows.Forms.dll `
-  -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll `
-  -r:"$env:WINDIR\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll" `
-  "$cs"
-if ($LASTEXITCODE -ne 0) { throw "编译失败" }
-Write-Host "编译完成: Koi.exe"
-
-# 4) 提交 + 打 tag + 推送
-git add -A
-git commit --no-gpg-sign -m "release v$new" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "git commit 失败，发版中止" }
-git tag "v$new"
-if ($LASTEXITCODE -ne 0) { throw "git tag 失败（tag 可能已存在），发版中止" }
-git push
-if ($LASTEXITCODE -ne 0) { throw "git push 失败，发版中止（本地 commit/tag 已保留，网络恢复后手动 git push && git push origin v$new）" }
-git push origin "v$new"
-if ($LASTEXITCODE -ne 0) { throw "推送 tag 失败，发版中止" }
-
-# 5) 创建 GitHub Release 并附上 exe（失败重试 3 次；仍失败只告警不中止——tag 已在远端，可稍后补建。Koi 必须重启）
-$relOk = $false
-for ($i = 1; $i -le 3; $i++) {
-    gh release create "v$new" "$repo\Koi.exe" --title "v$new" --generate-notes
-    if ($LASTEXITCODE -eq 0) { $relOk = $true; break }
-    Write-Host "GitHub Release 创建失败（第 $i 次），15 秒后重试..."
-    Start-Sleep -Seconds 15
+function Invoke-Gh {
+    param([string[]]$Arguments)
+    $output = & $script:gh @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "gh $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
+    return $output
 }
-if (-not $relOk) {
-    Write-Host "警告：GitHub Release 未能创建（tag v$new 已推送，可到 Releases 页面手动补建并上传 Koi.exe）。"
+function Replace-Version {
+    param([string]$File, [string]$Pattern, [string]$Replacement)
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    $text = [IO.File]::ReadAllText($File, $utf8)
+    if ([regex]::Matches($text, $Pattern).Count -ne 1) { throw "Expected one version declaration in $File ($Pattern)." }
+    [IO.File]::WriteAllText($File, [regex]::Replace($text, $Pattern, $Replacement), $utf8)
+}
+function Get-TargetProcesses {
+    param([string]$Target)
+    foreach ($process in @(Get-Process -Name Koi -ErrorAction SilentlyContinue)) {
+        try {
+            if ([string]::Equals($process.Path, $Target, [StringComparison]::OrdinalIgnoreCase)) { $process }
+        } catch {
+            # An inaccessible or unrelated process must never be terminated by name.
+            Write-Warning "Cannot inspect process $($process.Id); it will not be stopped."
+        }
+    }
+}
+function Stop-TargetProcesses {
+    param([string]$Target, [object[]]$Processes)
+    foreach ($process in $Processes) {
+        if ($process.HasExited) { continue }
+        $started = $process.StartTime
+        [void]$process.CloseMainWindow()
+        if ($process.WaitForExit(5000)) { continue }
+        $current = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+        if ($null -ne $current -and $current.StartTime -eq $started -and
+            [string]::Equals($current.Path, $Target, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning "Koi did not close within 5 seconds; stopping target PID $($current.Id)."
+            Stop-Process -Id $current.Id -Force -ErrorAction Stop
+            if (-not $current.WaitForExit(5000)) { throw "Target PID $($current.Id) did not exit." }
+        }
+    }
 }
 
-Write-Host "Release v$new 发布完成，启动 Koi..."
-Start-Process "$repo\Koi.exe"
+$repo = $PSScriptRoot
+$stage = $null
+$phase = 'preflight'
+$releaseCommit = $null
+$tag = $null
+$remotePublished = $false
+$restartRequired = $false
+$completed = $false
+$failure = $null
+$restartFailure = $null
+$installAttempted = $false
+$originalFiles = @{}
+$targetExe = Join-Path $repo 'Koi.exe'
+$git = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+$gh = (Get-Command gh -CommandType Application -ErrorAction Stop).Source
+
+Push-Location $repo
+try {
+    & (Join-Path $repo 'build.ps1') -CheckEnvironment -NonInteractive
+    $top = (Invoke-Git -Arguments @('rev-parse', '--show-toplevel')).Trim()
+    if (-not [string]::Equals([IO.Path]::GetFullPath($top), [IO.Path]::GetFullPath($repo), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Run release.ps1 from the root Koi checkout.'
+    }
+    if (@(Invoke-Git -Arguments @('status', '--porcelain=v1', '--untracked-files=normal')).Count -ne 0) {
+        throw 'Release requires a clean working tree, including untracked files. Commit/review changes first.'
+    }
+    $branch = (Invoke-Git -Arguments @('symbolic-ref', '--quiet', '--short', 'HEAD')).Trim()
+    $baseCommit = (Invoke-Git -Arguments @('rev-parse', 'HEAD')).Trim()
+    $remote = (Invoke-Git -Arguments @('config', ('branch.' + $branch + '.remote'))).Trim()
+    $mergeRef = (Invoke-Git -Arguments @('config', ('branch.' + $branch + '.merge'))).Trim()
+    if ($remote -ne 'origin' -or -not $mergeRef.StartsWith('refs/heads/')) {
+        throw 'The release branch must track an origin branch. Set its upstream before releasing.'
+    }
+    $fetchUrl = (Invoke-Git -Arguments @('remote', 'get-url', 'origin')).Trim()
+    $pushUrl = (Invoke-Git -Arguments @('remote', 'get-url', '--push', 'origin')).Trim()
+    if ($fetchUrl -ne $pushUrl) { throw 'Separate fetch/push URLs are not supported by this release script.' }
+    $identityName = (Invoke-Git -Arguments @('config', 'user.name')).Trim()
+    $identityEmail = (Invoke-Git -Arguments @('config', 'user.email')).Trim()
+    if (-not $identityName -or -not $identityEmail) { throw 'Configure git user.name and user.email first.' }
+    $repository = (Invoke-Gh -Arguments @('repo', 'view', '--json', 'nameWithOwner,viewerPermission,url')) | ConvertFrom-Json
+    if ($repository.viewerPermission -notin @('ADMIN', 'MAINTAIN', 'WRITE')) { throw 'GitHub repository write permission is required.' }
+    $repoName = [string]$repository.nameWithOwner
+    $githubHost = ([Uri]$repository.url).Host
+    $repoSpec = $githubHost + '/' + $repoName
+    Invoke-Gh -Arguments @('auth', 'status', '--hostname', $githubHost) | Out-Host
+    # Dry-run checks credentials/ref compatibility; server branch rules may still reject the real push.
+    Invoke-Git -Arguments @('push', '--dry-run', 'origin', ('HEAD:' + $mergeRef)) | Out-Host
+
+    $version = ([IO.File]::ReadAllText((Join-Path $repo 'VERSION'))).Trim()
+    if ($version -notmatch '^(\d+)\.(\d+)\.(\d+)$') { throw "Invalid VERSION: $version" }
+    $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+    switch ($Bump) {
+        'major' { $major++; $minor = 0; $patch = 0 }
+        'minor' { $minor++; $patch = 0 }
+        'patch' { $patch++ }
+    }
+    $next = "$major.$minor.$patch"
+    $tag = 'v' + $next
+    $localTags = @(Invoke-Git -Arguments @('tag', '--list', $tag))
+    if ($localTags.Count -ne 0) { throw "Local tag $tag already exists; inspect the previous release attempt." }
+    $remoteTags = @(Invoke-Git -Arguments @('ls-remote', '--tags', 'origin', ('refs/tags/' + $tag)))
+    if ($remoteTags.Count -ne 0) { throw "Remote tag $tag already exists; finish that release instead of creating it again." }
+
+    $phase = 'prepare'
+    $stage = Join-Path ([IO.Path]::GetTempPath()) ('Koi-release-' + [Guid]::NewGuid().ToString('N'))
+    Invoke-Git -Arguments @('clone', '--quiet', '--no-hardlinks', '--no-checkout', '--', $repo, $stage) | Out-Host
+    Invoke-Git -Arguments @('-C', $stage, 'checkout', '--quiet', '--detach', $baseCommit) | Out-Host
+    Invoke-Git -Arguments @('-C', $stage, 'remote', 'set-url', 'origin', $pushUrl) | Out-Host
+    Invoke-Git -Arguments @('-C', $stage, 'config', 'user.name', $identityName) | Out-Host
+    Invoke-Git -Arguments @('-C', $stage, 'config', 'user.email', $identityEmail) | Out-Host
+    [IO.File]::WriteAllText((Join-Path $stage 'VERSION'), $next + "`n", [Text.Encoding]::ASCII)
+    $old = [regex]::Escape($version)
+    Replace-Version (Join-Path $stage 'Program.cs') ('AssemblyVersion\("' + $old + '\.0"\)') ('AssemblyVersion("' + $next + '.0")')
+    Replace-Version (Join-Path $stage 'Program.cs') ('AssemblyFileVersion\("' + $old + '\.0"\)') ('AssemblyFileVersion("' + $next + '.0")')
+    Replace-Version (Join-Path $stage 'DockWindow.cs') ('AppVersion = "' + $old + '"') ('AppVersion = "' + $next + '"')
+
+    $phase = 'test-and-build'
+    & (Join-Path $stage 'test.ps1') -NonInteractive
+    & (Join-Path $stage 'build.ps1') -OutputPath (Join-Path $stage 'Koi.exe') -NonInteractive
+    # Only the explicit release files are staged, never unrelated working-tree content.
+    $releaseFiles = @('VERSION', 'Program.cs', 'DockWindow.cs', 'Koi.exe', 'Koi.exe.sha256')
+    Invoke-Git -Arguments (@('-C', $stage, 'add', '--') + $releaseFiles) | Out-Host
+    Invoke-Git -Arguments @('-C', $stage, 'commit', '-m', ('release ' + $tag)) | Out-Host
+    $releaseCommit = (Invoke-Git -Arguments @('-C', $stage, 'rev-parse', 'HEAD')).Trim()
+    Invoke-Git -Arguments @('-C', $stage, 'tag', $tag) | Out-Host
+
+    $phase = 'push'
+    # Branch and tag move together, or neither moves. No force push or remote deletion.
+    Invoke-Git -Arguments @('-C', $stage, 'push', '--atomic', 'origin', ('HEAD:' + $mergeRef), ('refs/tags/' + $tag)) | Out-Host
+    $phase = 'create-draft'
+    Push-Location $stage
+    try {
+        # Draft first: a failed upload never advertises an incomplete public release.
+        Invoke-Gh -Arguments @('release', 'create', $tag, '--repo', $repoSpec, '--verify-tag', '--draft', '--title', $tag, '--generate-notes') | Out-Host
+        $phase = 'upload-assets'
+        Invoke-Gh -Arguments @('release', 'upload', $tag, (Join-Path $stage 'Koi.exe'), (Join-Path $stage 'Koi.exe.sha256'), '--repo', $repoSpec) | Out-Host
+        $phase = 'publish-release'
+        Invoke-Gh -Arguments @('release', 'edit', $tag, '--repo', $repoSpec, '--draft=false') | Out-Host
+        $remotePublished = $true
+    } finally { Pop-Location }
+
+    $phase = 'install-local'
+    if ((Invoke-Git -Arguments @('rev-parse', 'HEAD')).Trim() -ne $baseCommit -or
+        @(Invoke-Git -Arguments @('status', '--porcelain=v1', '--untracked-files=normal')).Count -ne 0) {
+        throw 'The original checkout changed during release; published files were not installed locally.'
+    }
+    # Fetch the exact staged commit, without relying on a possibly stale remote-tracking branch.
+    Invoke-Git -Arguments @('fetch', '--no-tags', $stage, ('refs/tags/' + $tag + ':refs/tags/' + $tag)) | Out-Host
+    foreach ($name in $releaseFiles) {
+        $original = Join-Path $repo $name
+        $originalFiles[$name] = $null
+        if (Test-Path -LiteralPath $original) { $originalFiles[$name] = [IO.File]::ReadAllBytes($original) }
+    }
+    $running = @(Get-TargetProcesses $targetExe)
+    $restartRequired = $running.Count -gt 0
+    Stop-TargetProcesses $targetExe $running
+    $installAttempted = $true
+    Invoke-Git -Arguments @('merge', '--ff-only', $releaseCommit) | Out-Host
+    $completed = $true
+} catch {
+    $failure = $_
+    if ($installAttempted) {
+        try {
+            # A failed checkout can leave partial file writes without advancing HEAD.
+            # Restore only bytes attributable to this candidate; preserve concurrent edits.
+            if ((Invoke-Git -Arguments @('rev-parse', 'HEAD')).Trim() -eq $baseCommit) {
+                foreach ($name in $originalFiles.Keys) {
+                    $destination = Join-Path $repo $name
+                    if (-not (Test-Path -LiteralPath $destination)) { continue }
+                    $current = [Convert]::ToBase64String([IO.File]::ReadAllBytes($destination))
+                    $candidate = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $stage $name)))
+                    if ($current -eq $candidate) {
+                        if ($null -eq $originalFiles[$name]) { Remove-Item -LiteralPath $destination -Force }
+                        else { [IO.File]::WriteAllBytes($destination, $originalFiles[$name]) }
+                    }
+                }
+            }
+        } catch { Write-Warning "Could not restore uncommitted install files: $($_.Exception.Message)" }
+    }
+} finally {
+    if ($restartRequired) {
+        try {
+            if (@(Get-TargetProcesses $targetExe).Count -eq 0) {
+                $restarted = Start-Process -FilePath $targetExe -WorkingDirectory $repo -PassThru
+                Start-Sleep -Milliseconds 700
+                if ($restarted.HasExited) { throw 'Koi exited immediately after restart.' }
+            }
+        } catch { $restartFailure = $_; $completed = $false }
+    }
+    Pop-Location
+}
+
+if (-not $completed) {
+    $message = "Release did not complete. Phase: $phase."
+    if ($remotePublished) { $message += ' The GitHub release is published, but local installation/restart needs attention.' }
+    if ($failure) { $message += "`n" + $failure.Exception.Message }
+    if ($restartFailure) { $message += "`nRestart failed: " + $restartFailure.Exception.Message }
+    if ($stage -and (Test-Path -LiteralPath $stage)) {
+        $recovery = @(
+            $message,
+            "Staging checkout retained: $stage",
+            "Original checkout: $repo",
+            "Tag: $tag",
+            "Release commit: $releaseCommit",
+            'The original checkout was not used to prepare the release. No commit/tag was reset or deleted.',
+            'Inspect git status in both checkouts and the remote tag/release before retrying.',
+            'If push failed, retry the atomic branch/tag push from the staging checkout.',
+            'If asset upload failed, upload Koi.exe and Koi.exe.sha256 to the existing draft, then publish it.',
+            'If publication succeeded, close the original Koi instance and fast-forward the original checkout to the release commit.',
+            'See docs/testing.md for recovery commands. Do not bump the version again to recover a partial release.'
+        ) -join "`r`n"
+        $artifactDir = Join-Path $repo 'artifacts'
+        [IO.Directory]::CreateDirectory($artifactDir) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $artifactDir 'release-recovery.txt'), $recovery, (New-Object Text.UTF8Encoding($false)))
+        Write-Warning $recovery
+    }
+    throw $message
+}
+
+try { Remove-Item -LiteralPath $stage -Recurse -Force }
+catch { Write-Warning "Release succeeded, but the temporary checkout could not be removed: $stage" }
+Write-Host "Release $tag published with Koi.exe and SHA-256; local checkout updated."

@@ -1,14 +1,16 @@
 # Koi 锦鲤坞 — 让 Windows 桌面少点几下
 
 一个带**文字名称**的 Mac 风格悬浮启动坞：所有常用应用和文件夹**一眼可辨、一下直达**。
-单文件、零依赖，Windows 10/11 开箱即用。
+单个 exe 分发，使用 Windows 10/11 自带的 .NET Framework；无需第三方运行库。源码保持 C# 5，可用系统编译器构建。
+
+> 版本号见 [VERSION](VERSION)，未发布改动见 [CHANGELOG.md](CHANGELOG.md) 的 **Unreleased**。仓库根目录 `Koi.exe` 只在正式发版时更新，可能落后于源码。体验当前源码请运行 `build.bat`，启动 `artifacts/Koi.exe`。截图展示已发布版本的界面。
 
 > **为什么叫 Koi（锦鲤）？**
 > 鼠标划过时图标聚拢放大的效果，学名叫「鱼眼（fisheye）」——
 > 锦鲤浮于水面，指尖所至，鱼群聚拢。好记，也点题。
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
-![dependencies](https://img.shields.io/badge/dependencies-none-success)
+![runtime](https://img.shields.io/badge/runtime-.NET%20Framework-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![language](https://img.shields.io/badge/C%23-WPF-orange)
 
@@ -27,13 +29,13 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 | --- | --- | --- |
 | 打开不常用的软件 | 悬停等提示确认 → 再点击 | 名称直接可读 → 一下点击 |
 | 打开常用文件夹 | 开资源管理器 → 逐层进入 | 带名称的文件夹图标 → 一下直达 |
-| 程序已在运行 | 在任务栏小图里找一圈 | 点同一个图标，直接聚焦窗口 |
+| 普通 exe 已在运行且窗口可识别 | 在任务栏小图里找一圈 | 点同一个图标，尝试聚焦已有窗口 |
 | 调整入口顺序/位置 | 基本做不到 | 按住就拖，随时换、随时移 |
 
 ## ✨ 三大核心改进
 
 1. **应用带名称，交互更友好** — 每个图标下方常显文字名称（最多两行），一眼知道是什么软件，直接点击就打开；鼠标划过还有 Mac 式鱼眼放大
-2. **文件夹功能（Mac Dock 没有）** — 常用文件夹带名称常驻 Dock，点击直达，不再层层开窗口
+2. **文件夹快捷入口** — 常用文件夹带名称常驻 Dock，点击直达，不再层层开窗口
 3. **随时拖动，完全自由** — 图标按住即拖实时排序，Dock 整体拖到任意位置/任意屏幕；滚轮调大小、Ctrl+滚轮调透明度
 
 ![Koi 运行效果](docs/dock.png)
@@ -58,9 +60,9 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 - **悬浮 Dock 栏**：深色半透明圆角背景 + 投影，默认停在屏幕底部（任务栏正上方），可整体拖到任意位置
 - **Mac 式鱼眼放大**：鼠标划过时图标放大并凸出到 Dock 上方，相邻图标按距离联动
 - **图标名称常显（核心）**：每个图标下方常显名称，最多两行、超出省略，悬停胶囊看全名——文件夹再多也能一眼定位；右键「显示图标名称」可开关
-- **名称可读性优先**：项目过多放不下时横向滚动（滚到边缘自动滚 / Shift+滚轮），不缩小图标、不牺牲辨识效率
+- **名称可读性优先**：项目过多放不下时横向滚动（拖动图标到边缘时自动滚动 / Shift+滚轮），不缩小图标、不牺牲辨识效率
 - **间距自动分布**：项目少时自动铺开利用桌面宽度，项目多时自动收紧（收到最小仍放不下才滚动），增删应用/调图标大小后自动重排，无需手动调节
-- **滚轮调图标大小**：32–112px 无级缩放
+- **滚轮调图标大小**：32–112 逻辑像素，滚轮逐级调整
 - **Ctrl+滚轮调背景透明度**：25%–100%，让 Dock 融进壁纸（右键菜单也有「背景透明度」入口）
 - **文件堆叠（新）**：把一个文件拖到另一个文件上即叠成"文件堆"——图标出现叠纸效果，悬停弹出文件清单任选打开，也可**按住清单里的文件拖出**还原为独立图标；右键可拆开还原。只对文档类文件生效（应用与文件夹不参与堆叠）
 - **分组／工作场景切换（新）**：右键图标 → 移动到分组（开发/论文/日常…），右键空白 → 分组一键切换视图——每组只显示相关入口，各组顺序位置原样保留
@@ -71,7 +73,7 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 - **图标拖动排序**：按住图标左右拖，实时换位，顺序记住
 - **右键全管理**：打开文件位置、**复制文件位置**（绝对路径进剪贴板）、**强制结束进程**（卡死时不用再开任务栏）、重命名、移除；开机自启也在右键菜单里
 - **记住一切**：位置、大小、项目列表自动保存，重启后原样恢复
-- 干净：不占任务栏、不出现在 Alt-Tab、单进程 ~20MB 内存
+- 不占任务栏、不出现在 Alt-Tab；内存占用随图标数量、图像大小和操作变化，尚无固定环境的性能基准
 - 支持 **Microsoft Store（UWP）应用** 与**自定义 png 图标**
 - 高清图标：优先取 Shell 图标缓存的 256px 版本
 
@@ -79,7 +81,7 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 
 ### 第一步：启动
 
-双击 `Koi.exe`（本仓库已附带编译好的 exe；想从源码构建见下方[「如何把 Program.cs 编译成 exe」](#-如何把-programcs-编译成-exe)）。
+双击发布包里的 `Koi.exe`。仓库根目录也保留上次发布的 exe；当前源码的构建方法见下方[「构建与测试」](#-构建与测试)。同一会话只运行一个 Koi 实例，切换版本前先退出旧实例。
 
 首次启动：Dock 出现在**屏幕底部居中、任务栏正上方**，里面有一条提示文字。
 之后每次启动都会恢复上次的图标、大小和位置。
@@ -100,9 +102,9 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 
 | 操作 | 效果 |
 | --- | --- |
-| **点击图标** | 程序没在运行 → 启动；**已在运行 → 直接切到它的窗口**（不重复开新实例） |
+| **点击图标** | 普通 exe 没在运行则启动；识别到已有实例则尝试激活窗口，激活失败会提示且不重复启动。带参数或自定义工作目录的快捷方式保留原始启动语义 |
 | 鼠标悬停 | 图标放大（鱼眼效果）+ 上方显示名称标签 |
-| **滚轮**（Dock 上滚动） | 放大 / 缩小所有图标（32–112px） |
+| **滚轮**（Dock 上滚动） | 放大 / 缩小所有图标（32–112 逻辑像素，每次 4） |
 | **Ctrl + 滚轮** | 调节 Dock 背景透明度（25%–100%，调到最低即近乎隐形的玻璃感） |
 | **按住 Dock 空白处拖动** | 把 Dock 移到屏幕任意位置 |
 | **按住图标左右拖动** | 调整图标顺序：划过哪个位置就实时落位，松手保存 |
@@ -113,7 +115,7 @@ Koi 把「识别 → 定位 → 点击」压缩成**一眼 + 一下**：
 
 1. 把 5–8 个最常用的软件拖进 Dock
 2. 滚轮把图标调到顺眼的大小
-3. 拖到喜欢的位置（比如屏幕左侧竖放区、底部居中、或副屏）
+3. 把横向 Dock 拖到喜欢的位置（如屏幕底部或副屏；当前不支持竖向布局）
 4. 右键勾选 **「开机自启动」**——它会自动注册当前 exe 路径，
    所以上一步之前请先把 exe 放到一个不会移动的固定目录
 
@@ -170,67 +172,59 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Koi /f
 > ⚠️ **注意**：自启记录的是开启那一刻 exe 的完整路径。
 > 先把 `Koi.exe` 放到固定目录再开启自启；之后挪动文件夹需重新勾选一次。
 
-## 🔧 如何把 Program.cs 编译成 exe
+## 🔧 构建与测试
 
-仓库里的 `Koi.exe` 是已经编译好的成品，**不想编译直接用它即可**。
-想自己改代码（换背景色、圆角、放大幅度、间距……）或从源码构建时，看这里。
+需要 Windows 10/11、Windows PowerShell 5.1 和系统 .NET Framework 4.5+（正常 Windows 10/11 已包含兼容版本）。不需要 Visual Studio、额外 .NET SDK 或 NuGet 包。`build.ps1` 优先使用 Framework64 编译器，缺失时回退到 Framework 编译器。
 
-**前提**：Windows 10 / 11 自带 .NET Framework 4.x 编译器——
-**不需要安装 Visual Studio、SDK 或任何开发工具**，源码 `Program.cs` 是单文件 C# 5 语法，
-约 700 行、注释齐全。
+双击 `build.bat`，或在仓库目录运行：
 
-### 方式一：一键编译（推荐）
-
-双击仓库根目录的 **`build.bat`**，它自动调用系统自带的 `csc.exe` 编译器，
-在当前目录生成最新的 `Koi.exe`，完成。
-
-> 重新编译前请先退出正在运行的 Koi（右键 Dock → 退出），否则 exe 文件被占用会写入失败。
-
-### 方式二：手动命令行
-
-打开 `cmd`，执行（路径按你的仓库位置调整）：
-
-```bat
-cd /d C:\Windows\Microsoft.NET\Framework64\v4.0.30319
-
-csc -nologo -target:winexe -out:G:\workbuddy\Koi\Koi.exe ^
-  -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:Microsoft.VisualBasic.dll ^
-  -r:System.Windows.Forms.dll ^
-  -r:WPF\PresentationFramework.dll -r:WPF\PresentationCore.dll -r:WPF\WindowsBase.dll ^
-  -r:C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Xaml\v4.0_4.0.0.0__b77a5c561934e089\System.Xaml.dll ^
-  G:\workbuddy\Koi\Program.cs
+```powershell
+powershell -NoProfile -File .\build.ps1 -NonInteractive
+powershell -NoProfile -File .\test.ps1 -NonInteractive
+.\artifacts\Koi.exe
 ```
 
-命令说明：
+构建会编译根目录全部 `*.cs`，生成 `artifacts/Koi.exe` 和 `artifacts/Koi.exe.sha256`；不会覆盖根目录的已发布 exe。测试单独编译不依赖 WPF 的核心模块，使用临时目录和模拟平台，失败返回非零退出码。`build.bat --no-pause` 可用于命令行自动化；CI 环境也不会暂停。
 
-| 部分 | 作用 |
+GitHub Actions 的 Windows 作业执行核心回归测试、构建 GUI 程序，并上传 exe 与 SHA-256；不会运行 GUI、自动提交或发布。测试范围、桌面验收步骤及发布失败恢复见 [docs/testing.md](docs/testing.md)。
+
+若系统提示找不到编译器或 WPF 程序集，请修复 .NET Framework。若提示输出文件正在使用，请退出该路径的 Koi 实例后重试。若系统策略禁止脚本执行，请按自己的设备管理要求运行，脚本不会更改全局执行策略。
+
+### 源码结构
+
+| 文件 | 职责 |
 | --- | --- |
-| `-target:winexe` | 生成 Windows 窗体程序（双击运行不弹黑控制台） |
-| `-out:...` | 输出的 exe 路径 |
-| `-r:...` | 引用的系统程序集（WPF 三件套 + 绘图 + 注册表访问） |
-| `Program.cs` | 源码，单文件即全部工程 |
+| `Program.cs` | 单实例入口、程序集版本 |
+| `Models.cs` | XML 配置模型、文件堆成员快照 |
+| `DockWindow.cs` | WPF 窗口、布局、菜单、鱼眼与排序交互 |
+| `DockWindow.Stacks.cs` / `StackService.cs` | 文件堆 UI / 合并、拆分、迁移与元数据保留 |
+| `DockWindow.Launching.cs` / `LaunchService.cs` | Windows 窗口和进程操作 / 可测试的启动决策 |
+| `DockWindow.Configuration.cs` / `ConfigStore.cs` | 窗口设置接入 / 原子保存、备份恢复与字段校验 |
+| `DockWindow.Folders.cs` / `FolderService.cs` | 文件夹弹层 / 后台读取、取消、缓存与数量上限 |
+| `PathIdentity.cs` / `ShellIcons.cs` | 路径去重规则 / Windows Shell 图标解析与会话缓存 |
+| `tests/` | 无第三方测试框架的核心回归测试 |
 
-### 常见编译问题
-
-- **提示 csc 不存在**：个别精简版系统缺少 .NET Framework 4.x，去微软官网装上即可
-- **写不进 Koi.exe**：程序还在运行，先右键 Dock → 退出
-- **提示找不到元数据文件**：必须在 `Framework64\v4.0.30319` 目录下执行（WPF 程序集的相对路径才有效），或直接用 `build.bat`
+源文件拆分不改变 exe 的单文件分发方式。`DockWindow` 使用 partial class；涉及业务决策和文件读写的服务可独立测试，WPF/COM/Win32 的交互仍需 Windows 桌面验收。
 
 ## 🏷 版本与发版
 
-当前版本见仓库根目录 `VERSION` 文件（也会显示在右键菜单顶部）。
+版本号由 `VERSION`、`Program.cs` 的程序集版本和 `DockWindow.cs` 的菜单版本共同记录。未发布改动写入 [CHANGELOG.md](CHANGELOG.md) 的 Unreleased；只有实际发版才递增版本。
 
-每次更新代码后，运行一键发版脚本，版本号自动递增并完成全套发布：
+发版需要**干净且已提交的工作区**、跟踪 `origin` 分支的当前分支、Git 提交身份、GitHub CLI 登录以及仓库写权限。脚本会进行依赖、身份、版本/tag 和推送预检；服务端分支保护仍可能拒绝实际推送。
 
 ```powershell
-powershell -File release.ps1           # 补丁位 +1（默认，修 bug）
-powershell -File release.ps1 minor     # 次位 +1（新功能）
-powershell -File release.ps1 major     # 主位 +1（大改版）
+powershell -NoProfile -File .\release.ps1          # 补丁位 +1
+powershell -NoProfile -File .\release.ps1 minor    # 次位 +1
+powershell -NoProfile -File .\release.ps1 major    # 主位 +1
 ```
 
-脚本自动完成：递增版本号 → 同步 VERSION / Program.cs → 编译 → 提交并打 tag（如 `v1.0.1`）→ 推送 → 创建 GitHub Release 并附上最新的 `Koi.exe`。
+脚本在系统临时目录建立独立 checkout，修改版本，先跑测试，再编译和计算 SHA-256。仅将明确的版本文件与产物加入发布提交，原工作区和运行中的 Koi 此时不变。随后原子推送分支和 tag，创建草稿 Release、上传 exe 与校验文件，最后公开 Release。
 
-历史版本在 [Releases](https://github.com/sf00000/koi/releases) 页面下载。
+发布全部成功后，脚本才停止**路径与当前仓库 `Koi.exe` 完全一致**的实例并将当前分支快进至发布提交；只有该实例原本在运行才会重启。其他路径的 Koi 不受影响。失败通过非零退出码报告，不会把 tag 推送成功当成完整发布成功。
+
+失败时保留临时 checkout、已形成的 commit/tag，并写出 `artifacts/release-recovery.txt`。不会撤销或删除远端提交；上传失败可能留下远端 tag 和草稿 Release。不要直接重复递增版本，先按 [恢复步骤](docs/testing.md#发布失败恢复) 完成同一版本。自动发布不提供代码签名；SHA-256 用于比对产物完整性，不能代替发布者签名。
+
+历史版本见 [Releases](https://github.com/sf00000/koi/releases)。
 
 ## ❓ 常见问题
 
@@ -249,7 +243,16 @@ powershell -File release.ps1 major     # 主位 +1（大改版）
 
 **Q：配置存在哪？**
 `%APPDATA%\Koi\config.xml`（XmlSerializer 格式，可直接手工编辑）。
-图标文件缓存目录：`%APPDATA%\Koi\icons\`。
+保存失败等诊断写入同目录的 `errors.log`。Shell 图标缓存在当前进程内；自定义图标由配置中的 `Icon` 指定，请保留该文件。
+
+## 已知范围与性能说明
+
+- **平台**：面向 Windows 10/11。使用 WPF、WinForms 和 Win32 API，不支持直接在 macOS/Linux 运行。
+- **文件夹预览**：后台读取，最多显示 40 个子目录、扫描前 5,000 个文件并选出其中最近修改的 6 个；达到上限会提示，因此超大目录的结果不保证覆盖整个目录的最新文件。缓存 10 秒、最多 16 个目录，同时最多 2 个扫描。关闭或切换弹层会取消请求；系统正在执行的网络文件调用无法强制中断。
+- **窗口复用**：依赖可访问的进程路径和顶层窗口。提权应用、特殊启动器和 Windows 前台限制仍可能阻止识别或切换。带参数/特殊工作目录的 `.lnk` 按原快捷方式启动，不保证复用同一窗口。
+- **文件堆与配置**：新配置保存每个成员的名称、图标和分组，并兼容旧的路径列表。旧版配置原先未保存的成员元数据无法凭空恢复；降级前请备份配置，旧程序再次保存可能丢弃新字段。
+- **桌面体验**：当前为横向布局，无全屏自动隐藏、隐藏热键或窗口预览。混合 DPI、多屏拔插、远程桌面和高对比度模式仍需按测试清单实测。
+- **性能**：不承诺固定内存值或帧率。“立即释放内存”执行 GC 与工作集裁剪，任务管理器数值下降不代表长期内存需求减少。测量时请记录图标数量、图像尺寸、工作集/专用字节及操作延迟。
 
 ## 🗑 卸载
 
