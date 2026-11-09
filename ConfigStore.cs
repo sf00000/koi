@@ -84,7 +84,18 @@ namespace Koi
                 config.ShowNamesSpecified = true;
                 using (FileStream stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
-                    new XmlSerializer(typeof(Config)).Serialize(stream, config);
+                    // Framework's Serialize(Stream, ...) can escape invalid XML control
+                    // characters instead of rejecting them. Never replace a readable file
+                    // with XML that our reader cannot load on the next application start.
+                    XmlWriterSettings settings = new XmlWriterSettings
+                    {
+                        CheckCharacters = true,
+                        Indent = true,
+                        Encoding = new System.Text.UTF8Encoding(false),
+                        CloseOutput = false
+                    };
+                    using (XmlWriter writer = XmlWriter.Create(stream, settings))
+                        new XmlSerializer(typeof(Config)).Serialize(writer, config);
                     stream.Flush(true);
                 }
                 if (File.Exists(file)) File.Replace(temporary, file, preserveBackup ? null : file + ".bak");
