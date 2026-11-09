@@ -1,5 +1,6 @@
-# Koi.exe 直接随仓库分发（23KB、零依赖，方便不会编译的用户开箱即用）
+# The root Koi.exe is the last published binary; local/CI builds go to artifacts/.
 *.pdb
 bin/
 obj/
 .vs/
+artifacts/
